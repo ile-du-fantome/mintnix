@@ -21,3 +21,42 @@ checkout = git clone 'https://github.com/rust-lang/rust-clippy' 'rust-clippy'
 
 [references/rust-overlay]
 checkout = git clone 'https://github.com/oxalica/rust-overlay' 'rust-overlay'
+
+[references/mint]
+checkout = git clone 'https://github.com/trumank/mint' 'mint'
+
+[references/mintfixed]
+checkout = git clone 'https://github.com/Wasserkleber/mintfixed' 'mintfixed'
+
+[references/mintcat]
+checkout = git clone 'https://github.com/iris-cat-dev/mintcat' 'mintcat'
+
+[references/drg-mint-notag]
+checkout = git clone 'https://github.com/Strappazzon/drg-mint-notag' 'drg-mint-notag'
+
+[references/drg-mint-notag-bypass]
+checkout = git clone 'https://github.com/un-readable/drg-mint-notag-bypass' 'drg-mint-notag-bypass'
+
+[references/patternsleuth]
+checkout = git clone 'https://github.com/trumank/patternsleuth' 'patternsleuth'
+
+[references/jmap]
+checkout = git clone 'https://github.com/trumank/jmap' 'jmap'
+
+[references/retoc]
+checkout = git clone 'https://github.com/trumank/retoc' 'retoc'
+
+[references/uesave]
+checkout = git clone 'https://github.com/trumank/uesave' 'uesave'
+
+[references/repak]
+checkout = git clone 'https://github.com/trumank/repak' 'repak'
+
+[references/modio-rs]
+checkout = git clone 'https://github.com/trumank/modio-rs' 'modio-rs'
+
+[references/uasset_utils]
+checkout = git clone 'https://github.com/trumank/uasset_utils' 'uasset_utils'
+
+[references/unrealmodding]
+checkout = git clone 'https://github.com/trumank/unrealmodding' 'unrealmodding'
