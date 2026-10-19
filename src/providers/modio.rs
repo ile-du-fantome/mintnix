@@ -43,7 +43,7 @@ struct ModIoModUrl<'n> {
     modfile_id: Option<u32>,
 }
 
-const MODIO_DRG_ID: u32 = 2475;
+pub(crate) const MODIO_DRG_ID: u32 = 2475;
 const MODIO_PROVIDER_ID: &str = "modio";
 
 inventory::submit! {
@@ -55,8 +55,8 @@ inventory::submit! {
             super::ProviderParameter {
                 id: "oauth",
                 name: "OAuth Token",
-                description: "mod.io OAuth token",
-                link: Some("https://mod.io/me/access"),
+                description: "mod.io OAuth Personal Access Token",
+                link: Some("https://mod.io/me/access#tokens"),
             },
         ]
     }
@@ -170,7 +170,7 @@ impl ModioFile {
 }
 
 #[derive(Default)]
-struct LoggingMiddleware {
+pub(crate) struct LoggingMiddleware {
     requests: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 

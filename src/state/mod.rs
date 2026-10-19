@@ -15,7 +15,7 @@ use self::config::ConfigWrapper;
 use crate::{
     Dirs,
     gui::GuiTheme,
-    providers::{ModSpecification, ModStore},
+    providers::{ModInfo, ModSpecification, ModStore},
 };
 use crate::{gui::SortBy, providers::ProviderError};
 use mint_lib::{DRGInstallation, mod_info::MetaConfig};
@@ -48,6 +48,7 @@ pub struct ModGroup {
 #[obake::versioned]
 #[obake(version("0.0.0"))]
 #[obake(version("0.1.0"))]
+#[obake(version("0.2.0"))]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ModProfile {
     #[obake(cfg("0.0.0"))]
@@ -55,6 +56,7 @@ pub struct ModProfile {
 
     /// A profile can contain ordered individual mods mixed with mod groups.
     #[obake(cfg("0.1.0"))]
+    #[obake(cfg("0.2.0"))]
     pub mods: Vec<ModOrGroup>,
 }
 
@@ -72,9 +74,16 @@ impl From<ModProfile!["0.0.0"]> for ModProfile!["0.1.0"] {
     }
 }
 
+impl From<ModProfile!["0.1.0"]> for ModProfile!["0.2.0"] {
+    fn from(legacy: ModProfile!["0.1.0"]) -> Self {
+        Self { mods: legacy.mods }
+    }
+}
+
 #[obake::versioned]
 #[obake(version("0.0.0"))]
 #[obake(version("0.1.0"))]
+#[obake(version("0.2.0"))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModData {
     pub active_profile: String,
@@ -82,11 +91,15 @@ pub struct ModData {
     pub profiles: BTreeMap<String, ModProfile!["0.0.0"]>,
     #[obake(cfg("0.1.0"))]
     pub profiles: BTreeMap<String, ModProfile!["0.1.0"]>,
+    #[obake(cfg("0.2.0"))]
+    pub profiles: BTreeMap<String, ModProfile!["0.2.0"]>,
     #[obake(cfg("0.1.0"))]
+    pub groups: BTreeMap<String, ModGroup>,
+    #[obake(cfg("0.2.0"))]
     pub groups: BTreeMap<String, ModGroup>,
 }
 
-impl ModData!["0.1.0"] {
+impl ModData!["0.2.0"] {
     pub fn for_each_mod_predicate<
         F: FnMut(&ModConfig),
         G: FnMut(bool /* mod group enabled? */) -> bool,
@@ -257,6 +270,34 @@ impl From<ModData!["0.0.0"]> for ModData!["0.1.0"] {
     }
 }
 
+impl From<ModData!["0.1.0"]> for ModData!["0.2.0"] {
+    fn from(legacy: ModData!["0.1.0"]) -> Self {
+        Self {
+            active_profile: legacy.active_profile,
+            profiles: legacy
+                .profiles
+                .into_iter()
+                .map(|(name, profile)| (name, profile.into()))
+                .collect(),
+            groups: legacy.groups,
+        }
+    }
+}
+
+impl Default for ModData!["0.2.0"] {
+    fn default() -> Self {
+        Self {
+            active_profile: "default".to_string(),
+            profiles: [("default".to_string(), Default::default())]
+                .into_iter()
+                .collect(),
+            groups: [("default".to_string(), Default::default())]
+                .into_iter()
+                .collect(),
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "version")]
 pub enum VersionAnnotatedModData {
@@ -264,6 +305,8 @@ pub enum VersionAnnotatedModData {
     V0_0_0(ModData!["0.0.0"]),
     #[serde(rename = "0.1.0")]
     V0_1_0(ModData!["0.1.0"]),
+    #[serde(rename = "0.2.0")]
+    V0_2_0(ModData!["0.2.0"]),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -292,17 +335,18 @@ impl Default for MaybeVersionedModData {
 
 impl Default for VersionAnnotatedModData {
     fn default() -> Self {
-        VersionAnnotatedModData::V0_1_0(Default::default())
+        VersionAnnotatedModData::V0_2_0(Default::default())
     }
 }
 
 impl Deref for VersionAnnotatedModData {
-    type Target = ModData!["0.1.0"];
+    type Target = ModData!["0.2.0"];
 
     fn deref(&self) -> &Self::Target {
         match self {
             VersionAnnotatedModData::V0_0_0(_) => unreachable!(),
-            VersionAnnotatedModData::V0_1_0(md) => md,
+            VersionAnnotatedModData::V0_1_0(_) => unreachable!(),
+            VersionAnnotatedModData::V0_2_0(md) => md,
         }
     }
 }
@@ -311,17 +355,18 @@ impl DerefMut for VersionAnnotatedModData {
     fn deref_mut(&mut self) -> &mut Self::Target {
         match self {
             VersionAnnotatedModData::V0_0_0(_) => unreachable!(),
-            VersionAnnotatedModData::V0_1_0(md) => md,
+            VersionAnnotatedModData::V0_1_0(_) => unreachable!(),
+            VersionAnnotatedModData::V0_2_0(md) => md,
         }
     }
 }
 
-impl ModData!["0.1.0"] {
-    pub fn get_active_profile(&self) -> &ModProfile!["0.1.0"] {
+impl ModData!["0.2.0"] {
+    pub fn get_active_profile(&self) -> &ModProfile!["0.2.0"] {
         &self.profiles[&self.active_profile]
     }
 
-    pub fn get_active_profile_mut(&mut self) -> &mut ModProfile!["0.1.0"] {
+    pub fn get_active_profile_mut(&mut self) -> &mut ModProfile!["0.2.0"] {
         self.profiles.get_mut(&self.active_profile).unwrap()
     }
 
@@ -333,12 +378,15 @@ impl ModData!["0.1.0"] {
 
 #[obake::versioned]
 #[obake(version("0.0.0"))]
+#[obake(version("0.1.0"))]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
     pub provider_parameters: HashMap<String, HashMap<String, String>>,
     pub drg_pak_path: Option<PathBuf>,
     pub gui_theme: Option<GuiTheme>,
     pub sorting_config: Option<SortingConfig>,
+    #[serde(default = "default_true")]
+    pub confirm_deletion: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -361,6 +409,8 @@ impl Default for SortingConfig {
 pub enum VersionAnnotatedConfig {
     #[serde(rename = "0.0.0")]
     V0_0_0(Config!["0.0.0"]),
+    #[serde(rename = "0.1.0")]
+    V0_1_0(Config!["0.1.0"]),
     #[serde(other)]
     Unsupported,
 }
@@ -380,16 +430,17 @@ impl Default for MaybeVersionedConfig {
 
 impl Default for VersionAnnotatedConfig {
     fn default() -> Self {
-        VersionAnnotatedConfig::V0_0_0(Default::default())
+        VersionAnnotatedConfig::V0_1_0(Default::default())
     }
 }
 
 impl Deref for VersionAnnotatedConfig {
-    type Target = Config!["0.0.0"];
+    type Target = Config!["0.1.0"];
 
     fn deref(&self) -> &Self::Target {
         match self {
-            VersionAnnotatedConfig::V0_0_0(cfg) => cfg,
+            VersionAnnotatedConfig::V0_0_0(_) => unreachable!(),
+            VersionAnnotatedConfig::V0_1_0(cfg) => cfg,
             VersionAnnotatedConfig::Unsupported => unreachable!(),
         }
     }
@@ -398,7 +449,8 @@ impl Deref for VersionAnnotatedConfig {
 impl DerefMut for VersionAnnotatedConfig {
     fn deref_mut(&mut self) -> &mut Self::Target {
         match self {
-            VersionAnnotatedConfig::V0_0_0(cfg) => cfg,
+            VersionAnnotatedConfig::V0_0_0(_) => unreachable!(),
+            VersionAnnotatedConfig::V0_1_0(cfg) => cfg,
             VersionAnnotatedConfig::Unsupported => unreachable!(),
         }
     }
@@ -413,6 +465,33 @@ impl Default for Config!["0.0.0"] {
                 .map(DRGInstallation::main_pak),
             gui_theme: None,
             sorting_config: None,
+            confirm_deletion: true,
+        }
+    }
+}
+
+impl Default for Config!["0.1.0"] {
+    fn default() -> Self {
+        Self {
+            provider_parameters: Default::default(),
+            drg_pak_path: DRGInstallation::find()
+                .as_ref()
+                .map(DRGInstallation::main_pak),
+            gui_theme: None,
+            sorting_config: None,
+            confirm_deletion: true,
+        }
+    }
+}
+
+impl From<Config!["0.0.0"]> for Config!["0.1.0"] {
+    fn from(legacy: Config!["0.0.0"]) -> Self {
+        Self {
+            provider_parameters: legacy.provider_parameters,
+            drg_pak_path: legacy.drg_pak_path,
+            gui_theme: legacy.gui_theme,
+            sorting_config: legacy.sorting_config,
+            confirm_deletion: legacy.confirm_deletion,
         }
     }
 }
@@ -420,6 +499,67 @@ impl Default for Config!["0.0.0"] {
 impl From<&VersionAnnotatedConfig> for MetaConfig {
     fn from(_value: &VersionAnnotatedConfig) -> Self {
         MetaConfig {}
+    }
+}
+
+#[obake::versioned]
+#[obake(version("0.0.0"))]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ModNotes {
+    pub notes: HashMap<String, String>,
+}
+
+impl ModNotes!["0.0.0"] {
+    pub fn get_note_key(info: &ModInfo) -> String {
+        if let Some(modio_id) = info.modio_id {
+            format!("modio:{modio_id}")
+        } else {
+            info.spec.url.clone()
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "version")]
+pub enum VersionAnnotatedModNotes {
+    #[serde(rename = "0.0.0")]
+    V0_0_0(ModNotes!["0.0.0"]),
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum MaybeVersionedModNotes {
+    Versioned(VersionAnnotatedModNotes),
+    Legacy(ModNotes!["0.0.0"]),
+}
+
+impl Default for MaybeVersionedModNotes {
+    fn default() -> Self {
+        MaybeVersionedModNotes::Versioned(Default::default())
+    }
+}
+
+impl Default for VersionAnnotatedModNotes {
+    fn default() -> Self {
+        VersionAnnotatedModNotes::V0_0_0(Default::default())
+    }
+}
+
+impl Deref for VersionAnnotatedModNotes {
+    type Target = ModNotes!["0.0.0"];
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            VersionAnnotatedModNotes::V0_0_0(notes) => notes,
+        }
+    }
+}
+
+impl DerefMut for VersionAnnotatedModNotes {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        match self {
+            VersionAnnotatedModNotes::V0_0_0(notes) => notes,
+        }
     }
 }
 
@@ -445,12 +585,15 @@ pub enum StateError {
     ModDataDeserializationFailed { source: serde_json::Error },
     #[snafu(display("failed to deserialize legacy profiles"))]
     LegacyProfilesDeserializationFailed { source: serde_json::Error },
+    #[snafu(display("failed to deserialize mod notes"))]
+    ModNotesDeserializationFailed { source: serde_json::Error },
 }
 
 pub struct State {
     pub dirs: Dirs,
     pub config: ConfigWrapper<VersionAnnotatedConfig>,
     pub mod_data: ConfigWrapper<VersionAnnotatedModData>,
+    pub mod_notes: ConfigWrapper<VersionAnnotatedModNotes>,
     pub store: Arc<ModStore>,
 }
 
@@ -468,12 +611,18 @@ impl State {
         let mod_data = ConfigWrapper::<VersionAnnotatedModData>::new(mod_data_path, mod_data);
         mod_data.save().unwrap();
 
+        let mod_notes_path = dirs.config_dir.join("mod_notes.json");
+        let mod_notes = read_mod_notes_or_default(&mod_notes_path)?;
+        let mod_notes = ConfigWrapper::<VersionAnnotatedModNotes>::new(mod_notes_path, mod_notes);
+        mod_notes.save().unwrap();
+
         let store = ModStore::new(&dirs.cache_dir, &config.provider_parameters)?.into();
 
         Ok(Self {
             dirs,
             config,
             mod_data,
+            mod_notes,
             store,
         })
     }
@@ -486,11 +635,12 @@ fn read_config_or_default(config_path: &PathBuf) -> Result<VersionAnnotatedConfi
                 .context(CfgDeserializationFailedSnafu)?;
             match config {
                 MaybeVersionedConfig::Versioned(v) => match v {
-                    VersionAnnotatedConfig::V0_0_0(v) => VersionAnnotatedConfig::V0_0_0(v),
+                    VersionAnnotatedConfig::V0_0_0(v) => VersionAnnotatedConfig::V0_1_0(v.into()),
+                    VersionAnnotatedConfig::V0_1_0(v) => VersionAnnotatedConfig::V0_1_0(v),
                     VersionAnnotatedConfig::Unsupported => UnsupportedCfgVersionSnafu.fail()?,
                 },
                 MaybeVersionedConfig::Legacy(legacy) => {
-                    VersionAnnotatedConfig::V0_0_0(Config_v0_0_0 {
+                    VersionAnnotatedConfig::V0_1_0(Config_v0_1_0 {
                         provider_parameters: legacy.provider_parameters,
                         drg_pak_path: legacy.drg_pak_path,
                         ..Default::default()
@@ -528,20 +678,42 @@ fn read_mod_data_or_default(
     };
 
     let mod_data = match mod_data {
-        MaybeVersionedModData::Legacy(legacy) => VersionAnnotatedModData::V0_1_0(legacy.into()),
+        MaybeVersionedModData::Legacy(legacy) => {
+            VersionAnnotatedModData::V0_2_0(ModData_v0_1_0::from(legacy).into())
+        }
         MaybeVersionedModData::Versioned(v) => match v {
-            VersionAnnotatedModData::V0_0_0(md) => VersionAnnotatedModData::V0_1_0(md.into()),
-            VersionAnnotatedModData::V0_1_0(md) => VersionAnnotatedModData::V0_1_0(md),
+            VersionAnnotatedModData::V0_0_0(md) => {
+                VersionAnnotatedModData::V0_2_0(ModData_v0_1_0::from(md).into())
+            }
+            VersionAnnotatedModData::V0_1_0(md) => VersionAnnotatedModData::V0_2_0(md.into()),
+            VersionAnnotatedModData::V0_2_0(md) => VersionAnnotatedModData::V0_2_0(md),
         },
     };
 
     Ok(mod_data)
 }
 
+fn read_mod_notes_or_default(
+    mod_notes_path: &PathBuf,
+) -> Result<VersionAnnotatedModNotes, StateError> {
+    Ok(match fs::read(mod_notes_path) {
+        Ok(buf) => {
+            let notes = serde_json::from_slice::<MaybeVersionedModNotes>(&buf)
+                .context(ModNotesDeserializationFailedSnafu)?;
+            match notes {
+                MaybeVersionedModNotes::Legacy(legacy) => VersionAnnotatedModNotes::V0_0_0(legacy),
+                MaybeVersionedModNotes::Versioned(v) => v,
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => VersionAnnotatedModNotes::default(),
+        Err(e) => Err(e)?,
+    })
+}
+
 #[cfg(test)]
 mod mod_data_tests {
     use super::{
-        ModConfig, ModData_v0_1_0 as ModData, ModGroup, ModOrGroup, ModProfile_v0_1_0 as ModProfile,
+        ModConfig, ModData_v0_2_0 as ModData, ModGroup, ModOrGroup, ModProfile_v0_2_0 as ModProfile,
     };
     use crate::providers::ModSpecification;
 

@@ -5,20 +5,20 @@ use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand};
 use tracing::{debug, info};
 
-use mint::mod_lints::{LintId, run_lints};
-use mint::providers::ProviderFactory;
-use mint::{
+use mintnix::mod_lints::{LintId, run_lints};
+use mintnix::providers::ProviderFactory;
+use mintnix::{
     Dirs, MintError, resolve_ordered_with_provider_init,
     resolve_unordered_and_integrate_with_provider_init,
 };
-use mint::{gui::gui, providers::ModSpecification, state::State};
+use mintnix::{gui::gui, providers::ModSpecification, state::State};
 
 /// Command line integration tool.
 #[derive(Parser, Debug)]
 struct ActionIntegrate {
-    /// Path to FSD-WindowsNoEditor.pak (FSD-WinGDK.pak for Microsoft Store version) located
-    /// inside the "Deep Rock Galactic" installation directory under FSD/Content/Paks. Only
-    /// necessary if it cannot be found automatically.
+    /// Path to FSD-WindowsNoEditor.pak located inside the "Deep Rock Galactic"
+    /// installation directory under FSD/Content/Paks. Only necessary if it cannot be found
+    /// automatically.
     #[arg(short, long)]
     fsd_pak: Option<PathBuf>,
 
@@ -41,9 +41,9 @@ struct ActionIntegrate {
 /// Integrate a profile
 #[derive(Parser, Debug)]
 struct ActionIntegrateProfile {
-    /// Path to FSD-WindowsNoEditor.pak (FSD-WinGDK.pak for Microsoft Store version) located
-    /// inside the "Deep Rock Galactic" installation directory under FSD/Content/Paks. Only
-    /// necessary if it cannot be found automatically.
+    /// Path to FSD-WindowsNoEditor.pak located inside the "Deep Rock Galactic"
+    /// installation directory under FSD/Content/Paks. Only necessary if it cannot be found
+    /// automatically.
     #[arg(short, long)]
     fsd_pak: Option<PathBuf>,
 
@@ -65,9 +65,9 @@ struct ActionLaunch {
 /// Lint the mod bundle that would be created for a profile.
 #[derive(Parser, Debug)]
 struct ActionLint {
-    /// Path to FSD-WindowsNoEditor.pak (FSD-WinGDK.pak for Microsoft Store version) located
-    /// inside the "Deep Rock Galactic" installation directory under FSD/Content/Paks. Only
-    /// necessary if it cannot be found automatically.
+    /// Path to FSD-WindowsNoEditor.pak located inside the "Deep Rock Galactic"
+    /// installation directory under FSD/Content/Paks. Only necessary if it cannot be found
+    /// automatically.
     #[arg(short, long)]
     fsd_pak: Option<PathBuf>,
 
@@ -84,7 +84,7 @@ enum Action {
 }
 
 #[derive(Parser, Debug)]
-#[command(author, version=mint_lib::built_info::GIT_VERSION.unwrap())]
+#[command(author, version = env!("CARGO_PKG_VERSION"))]
 struct Args {
     #[command(subcommand)]
     action: Option<Action>,
@@ -95,13 +95,6 @@ struct Args {
 }
 
 fn main() -> Result<()> {
-    #[cfg(target_os = "windows")]
-    {
-        // Try to enable ANSI code support on Windows 10 for console. If it fails, then whatever
-        // *shrugs*.
-        let _res = ansi_term::enable_ansi_support();
-    }
-
     let args = Args::parse();
 
     let dirs = args

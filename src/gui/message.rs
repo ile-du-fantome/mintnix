@@ -1,16 +1,14 @@
 use std::collections::BTreeSet;
 use std::ops::DerefMut;
-use std::time::SystemTime;
 use std::{collections::HashMap, sync::Arc};
 
-use snafu::prelude::*;
+use anyhow::Result;
 use tokio::{
     sync::mpsc::{self, Sender},
     task::JoinHandle,
 };
 use tracing::*;
 
-use super::SelfUpdateProgress;
 use super::{
     App, SpecFetchProgress, WindowProviderParameters,
     request_counter::{RequestCounter, RequestID},
@@ -18,15 +16,13 @@ use super::{
 use crate::gui::LastAction;
 use crate::integrate::*;
 use crate::mod_lints::{LintId, LintReport};
-use crate::state::{ModData_v0_1_0 as ModData, ModOrGroup};
+use crate::state::{ModData_v0_2_0 as ModData, ModOrGroup};
 use crate::*;
 use crate::{
     providers::{FetchProgress, ModInfo, ModStore},
     state::ModConfig,
 };
-use mint_lib::error::GenericError;
 use mint_lib::mod_info::MetaConfig;
-use mint_lib::update::GitHubRelease;
 
 #[derive(Debug)]
 pub struct MessageHandle<S> {
@@ -41,10 +37,8 @@ pub enum Message {
     Integrate(Integrate),
     FetchModProgress(FetchModProgress),
     UpdateCache(UpdateCache),
-    CheckUpdates(CheckUpdates),
+    FetchModDetails(Box<FetchModDetails>),
     LintMods(Box<LintMods>),
-    SelfUpdate(SelfUpdate),
-    FetchSelfUpdateProgress(FetchSelfUpdateProgress),
 }
 
 impl Message {
@@ -54,10 +48,8 @@ impl Message {
             Self::Integrate(msg) => msg.receive(app),
             Self::FetchModProgress(msg) => msg.receive(app),
             Self::UpdateCache(msg) => msg.receive(app),
-            Self::CheckUpdates(msg) => msg.receive(app),
+            Self::FetchModDetails(msg) => msg.receive(app),
             Self::LintMods(msg) => msg.receive(app),
-            Self::SelfUpdate(msg) => msg.receive(app),
-            Self::FetchSelfUpdateProgress(msg) => msg.receive(app),
         }
     }
 }
@@ -300,57 +292,6 @@ impl UpdateCache {
     }
 }
 
-#[derive(Debug)]
-pub struct CheckUpdates {
-    rid: RequestID,
-    result: Result<GitHubRelease, GenericError>,
-}
-
-impl CheckUpdates {
-    pub fn send(app: &mut App, ctx: &egui::Context) {
-        let rid = app.request_counter.next();
-        let tx = app.tx.clone();
-        let ctx = ctx.clone();
-
-        let handle = tokio::spawn(async move {
-            tx.send(Message::CheckUpdates(Self {
-                rid,
-                result: mint_lib::update::get_latest_release().await,
-            }))
-            .await
-            .unwrap();
-            ctx.request_repaint();
-        });
-        app.check_updates_rid = Some(MessageHandle {
-            rid,
-            handle,
-            state: (),
-        });
-    }
-
-    fn receive(self, app: &mut App) {
-        if Some(self.rid) == app.check_updates_rid.as_ref().map(|r| r.rid) {
-            app.check_updates_rid = None;
-            match self.result {
-                Ok(release) => {
-                    if let (Ok(version), Some(Ok(release_version))) = (
-                        semver::Version::parse(env!("CARGO_PKG_VERSION")),
-                        release
-                            .tag_name
-                            .strip_prefix('v')
-                            .map(semver::Version::parse),
-                    ) && release_version > version
-                    {
-                        app.available_update = Some(release);
-                        app.show_update_time = Some(SystemTime::now());
-                    }
-                }
-                Err(e) => tracing::warn!("failed to fetch update {e}"),
-            }
-        }
-    }
-}
-
 async fn integrate_async(
     store: Arc<ModStore>,
     ctx: egui::Context,
@@ -540,194 +481,110 @@ async fn resolve_async_ordered(
 }
 
 #[derive(Debug)]
-pub struct SelfUpdate {
+pub struct FetchModDetails {
     rid: RequestID,
-    result: Result<PathBuf, IntegrationError>,
-}
-
-impl SelfUpdate {
-    pub fn send(
-        rc: &mut RequestCounter,
-        tx: Sender<Message>,
-        ctx: egui::Context,
-    ) -> MessageHandle<SelfUpdateProgress> {
-        let rid = rc.next();
-        MessageHandle {
-            rid,
-            handle: tokio::task::spawn(async move {
-                let result = self_update_async(ctx.clone(), rid, tx.clone()).await;
-                tx.send(Message::SelfUpdate(SelfUpdate { rid, result }))
-                    .await
-                    .unwrap();
-                ctx.request_repaint();
-            }),
-            state: SelfUpdateProgress::Pending,
-        }
-    }
-
-    fn receive(self, app: &mut App) {
-        if Some(self.rid) == app.self_update_rid.as_ref().map(|r| r.rid) {
-            match self.result {
-                Ok(original_exe_path) => {
-                    info!("self update complete");
-                    app.original_exe_path = Some(original_exe_path);
-                    app.last_action = Some(LastAction::success("self update complete".to_string()));
-                }
-                Err(e) => {
-                    error!("self update failed");
-                    error!("{:#?}", e);
-                    app.self_update_rid = None;
-                    app.last_action = Some(LastAction::failure("self update failed".to_string()));
-                }
-            }
-            app.integrate_rid = None;
-        }
-    }
+    modio_id: u32,
+    result: Result<ModDetails>,
 }
 
 #[derive(Debug)]
-pub struct FetchSelfUpdateProgress {
-    rid: RequestID,
-    progress: SelfUpdateProgress,
+pub struct ModDetails {
+    pub r#mod: modio::mods::Mod,
+    pub versions: Vec<modio::files::File>,
+    pub thumbnail: Vec<u8>,
 }
 
-impl FetchSelfUpdateProgress {
-    fn receive(self, app: &mut App) {
-        if let Some(MessageHandle { rid, state, .. }) = &mut app.self_update_rid
-            && *rid == self.rid
-        {
-            *state = self.progress;
-        }
-    }
-}
+impl FetchModDetails {
+    pub fn send(
+        rc: &mut RequestCounter,
+        ctx: &egui::Context,
+        tx: Sender<Message>,
+        oauth_token: &str,
+        modio_id: u32,
+    ) -> MessageHandle<()> {
+        let rid = rc.next();
+        let ctx = ctx.clone();
+        let oauth_token = oauth_token.to_string();
 
-async fn self_update_async(
-    ctx: egui::Context,
-    rid: RequestID,
-    message_tx: Sender<Message>,
-) -> Result<PathBuf, IntegrationError> {
-    use futures::stream::TryStreamExt;
-    use tokio::io::AsyncWriteExt;
-
-    let (tx, mut rx) = mpsc::channel::<SelfUpdateProgress>(1);
-
-    tokio::spawn(async move {
-        while let Some(progress) = rx.recv().await {
-            message_tx
-                .send(Message::FetchSelfUpdateProgress(FetchSelfUpdateProgress {
+        MessageHandle {
+            rid,
+            handle: tokio::task::spawn(async move {
+                let result = fetch_modio_mod_details(oauth_token, modio_id).await;
+                tx.send(Message::FetchModDetails(Box::new(FetchModDetails {
                     rid,
-                    progress,
-                }))
+                    result,
+                    modio_id,
+                })))
                 .await
                 .unwrap();
-            ctx.request_repaint();
-        }
-    });
-
-    let client = reqwest::Client::new();
-
-    let asset_name = if cfg!(target_os = "windows") {
-        "mint-x86_64-pc-windows-msvc.zip"
-    } else if cfg!(target_os = "linux") {
-        "mint-x86_64-unknown-linux-gnu.zip"
-    } else {
-        unimplemented!("unsupported platform");
-    };
-
-    info!("downloading update");
-
-    let response = client
-        .get(format!(
-            "https://github.com/trumank/mint/releases/latest/download/{asset_name}"
-        ))
-        .send()
-        .await
-        .map_err(Into::into)
-        .with_context(|_| SelfUpdateFailedSnafu)?
-        .error_for_status()
-        .map_err(Into::into)
-        .with_context(|_| SelfUpdateFailedSnafu)?;
-    let size = response.content_length();
-    debug!(?response);
-    debug!(?size);
-
-    let tmp_dir = tempfile::Builder::new()
-        .prefix("self_update")
-        .tempdir_in(std::env::current_dir()?)?;
-    let tmp_archive_path = tmp_dir.path().join(asset_name);
-    let mut tmp_archive = tokio::fs::File::create(&tmp_archive_path)
-        .await
-        .map_err(Into::into)
-        .with_context(|_| SelfUpdateFailedSnafu)?;
-    let mut stream = response.bytes_stream();
-
-    let mut total_bytes_written = 0;
-    while let Some(bytes) = stream
-        .try_next()
-        .await
-        .map_err(Into::into)
-        .with_context(|_| SelfUpdateFailedSnafu)?
-    {
-        let bytes_written = tmp_archive.write(&bytes).await?;
-        total_bytes_written += bytes_written;
-        if let Some(size) = size {
-            tx.send(SelfUpdateProgress::Progress {
-                progress: total_bytes_written as u64,
-                size,
-            })
-            .await
-            .unwrap();
+                ctx.request_repaint();
+            }),
+            state: (),
         }
     }
 
-    debug!(?tmp_dir);
-    debug!(?tmp_archive_path);
-    debug!(?tmp_archive);
+    fn receive(self, app: &mut App) {
+        let mut to_remove = None;
 
-    let original_exe_path =
-        tokio::task::spawn_blocking(move || -> Result<PathBuf, IntegrationError> {
-            let bin_name = if cfg!(target_os = "windows") {
-                "mint.exe"
-            } else if cfg!(target_os = "linux") {
-                "mint"
-            } else {
-                unimplemented!("unsupported platform");
-            };
-
-            info!("extracting downloaded update archive");
-            self_update::Extract::from_source(&tmp_archive_path)
-                .archive(self_update::ArchiveKind::Zip)
-                .extract_file(tmp_dir.path(), bin_name)
-                .map_err(Into::into)
-                .with_context(|_| SelfUpdateFailedSnafu)?;
-
-            info!("replacing old executable with new executable");
-            let tmp_file = tmp_dir.path().join("replacement_tmp");
-            let bin_path = tmp_dir.path().join(bin_name);
-
-            let original_exe_path = std::env::current_exe()?;
-
-            self_update::Move::from_source(&bin_path)
-                .replace_using_temp(&tmp_file)
-                .to_dest(&original_exe_path)
-                .map_err(Into::into)
-                .with_context(|_| SelfUpdateFailedSnafu)?;
-
-            #[cfg(target_os = "linux")]
-            {
-                info!("setting executable permission on new executable");
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(&original_exe_path, std::fs::Permissions::from_mode(0o755))
-                    .unwrap();
+        if let Some(req) = app.fetch_mod_details_rid.get(&self.modio_id)
+            && req.rid == self.rid
+        {
+            match self.result {
+                Ok(mod_details) => {
+                    info!("fetch mod details successful");
+                    app.mod_details.insert(mod_details.r#mod.id, mod_details);
+                    app.last_action = Some(LastAction::success("Fetched mod details".to_string()));
+                }
+                Err(e) => {
+                    error!("fetch mod details failed");
+                    error!("{:#?}", e);
+                    to_remove = Some(self.modio_id);
+                    app.last_action = Some(LastAction::failure(
+                        "Failed to fetch mod details".to_string(),
+                    ));
+                }
             }
+        }
 
-            Ok(original_exe_path)
-        })
-        .await??;
+        if let Some(id) = to_remove {
+            app.fetch_mod_details_rid.remove(&id);
+        }
+    }
+}
 
-    tx.send(SelfUpdateProgress::Complete).await.unwrap();
+async fn fetch_modio_mod_details(oauth_token: String, modio_id: u32) -> Result<ModDetails> {
+    use crate::providers::modio::{LoggingMiddleware, MODIO_DRG_ID};
+    use modio::{Credentials, Modio, filter::prelude::*};
 
-    info!("update successful");
+    let credentials = Credentials::with_token("", oauth_token);
+    let client = reqwest_middleware::ClientBuilder::new(reqwest::Client::new())
+        .with::<LoggingMiddleware>(Default::default())
+        .build();
+    let modio = Modio::new(credentials, client.clone())?;
 
-    Ok(original_exe_path)
+    let r#mod = modio
+        .game(MODIO_DRG_ID)
+        .mods()
+        .search(Id::eq(modio_id))
+        .first()
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("mod {modio_id} not found"))?;
+
+    let mod_ref = modio.mod_(MODIO_DRG_ID, modio_id);
+    let filter = with_limit(10).order_by(modio::user::filters::files::Version::desc());
+    let versions = mod_ref.clone().files().search(filter).first_page().await?;
+
+    let thumbnail = client
+        .get(r#mod.logo.thumb_320x180.clone())
+        .send()
+        .await?
+        .bytes()
+        .await?
+        .to_vec();
+
+    Ok(ModDetails {
+        r#mod,
+        versions,
+        thumbnail,
+    })
 }

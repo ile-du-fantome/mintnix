@@ -1,4 +1,12 @@
-/target
+drafts.md
+HANDOFF.md
+PLAN.md
+
+# Build output
 /hook/target
-/.idea
-/result
+/target
+/references
+/.direnv
+
+# Windows
+[Dd]esktop.ini

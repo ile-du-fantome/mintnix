@@ -5,11 +5,10 @@ use std::{io::BufReader, path::Path};
 
 use anyhow::{Context, Result};
 use fs_err as fs;
-use hooks::{FnLoadGameFromMemory, FnSaveGameToMemory};
 use mint_lib::mod_info::Meta;
 use tracing::{info, warn};
 
-proxy_dll::proxy_dll!([x3daudio1_7, d3d9], init);
+proxy_dll::proxy_dll!([x3daudio1_7], init);
 
 fn init() {
     unsafe {
@@ -62,30 +61,6 @@ impl Globals {
                     .as_ref()
                     .unwrap()
                     .uobject_base_utility_get_path_name
-                    .0,
-            )
-        }
-    }
-    pub fn save_game_to_memory(&self) -> FnSaveGameToMemory {
-        unsafe {
-            std::mem::transmute(
-                self.resolution
-                    .save_game
-                    .as_ref()
-                    .unwrap()
-                    .save_game_to_memory
-                    .0,
-            )
-        }
-    }
-    pub fn load_game_from_memory(&self) -> FnLoadGameFromMemory {
-        unsafe {
-            std::mem::transmute(
-                self.resolution
-                    .save_game
-                    .as_ref()
-                    .unwrap()
-                    .load_game_from_memory
                     .0,
             )
         }

@@ -1,15 +1,9 @@
-use patternsleuth::MemoryTrait;
 use patternsleuth::resolvers::futures::future::join_all;
 use patternsleuth::resolvers::unreal::blueprint_library::UFunctionBind;
 use patternsleuth::resolvers::unreal::fname::{FNameCtorWchar, FNameToString};
 use patternsleuth::resolvers::unreal::game_loop::Main;
 use patternsleuth::resolvers::unreal::gmalloc::GMalloc;
 use patternsleuth::resolvers::unreal::kismet::{FFrameStep, FFrameStepExplicitProperty};
-use patternsleuth::resolvers::unreal::save_game::{
-    UGameplayStaticsDoesSaveGameExist, UGameplayStaticsLoadGameFromMemory,
-    UGameplayStaticsLoadGameFromSlot, UGameplayStaticsSaveGameToMemory,
-    UGameplayStaticsSaveGameToSlot,
-};
 use patternsleuth::resolvers::unreal::*;
 use patternsleuth::resolvers::*;
 use patternsleuth::scanner::Pattern;
@@ -19,28 +13,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, PartialEq)]
 #[cfg_attr(feature = "serde-resolvers", derive(Serialize, Deserialize))]
-pub struct GetServerName(pub usize);
-impl_resolver_singleton!(collect, GetServerName);
-impl_resolver_singleton!(PEImage, GetServerName, |ctx| async {
-    let patterns = [
-        "48 89 5C 24 10 48 89 6C 24 18 48 89 74 24 20 57 41 56 41 57 48 83 EC 30 45 33 FF 4C 8B F2 48 8B D9 44 89 7C 24 50 41 8B FF",
-    ];
-
-    let res = join_all(patterns.iter().map(|p| ctx.scan(Pattern::new(p).unwrap()))).await;
-
-    // matches two but the first is the one we need
-    // could potentially get number of xrefs if this becomes problematic
-    Ok(Self(
-        res.into_iter()
-            .flatten()
-            .next()
-            .context("expected at least one")?,
-    ))
-});
-
-#[derive(Debug, PartialEq)]
-#[cfg_attr(feature = "serde-resolvers", derive(Serialize, Deserialize))]
-pub struct FOnlineSessionSettingsSetFString(pub usize);
+pub struct FOnlineSessionSettingsSetFString(pub u64);
 impl_resolver_singleton!(collect, FOnlineSessionSettingsSetFString);
 impl_resolver_singleton!(PEImage, FOnlineSessionSettingsSetFString, |ctx| async {
     let patterns = ["48 89 5C 24 ?? 48 89 54 24 ?? 55 56 57 48 83 EC 40 49 8B F8 48 8D 69"];
@@ -50,7 +23,7 @@ impl_resolver_singleton!(PEImage, FOnlineSessionSettingsSetFString, |ctx| async 
 
 #[derive(Debug, PartialEq)]
 #[cfg_attr(feature = "serde-resolvers", derive(Serialize, Deserialize))]
-pub struct USessionHandlingFSDFillSessionSetttingInner(pub usize);
+pub struct USessionHandlingFSDFillSessionSetttingInner(pub u64);
 impl_resolver_singleton!(collect, USessionHandlingFSDFillSessionSetttingInner);
 impl_resolver_singleton!(
     PEImage,
@@ -67,36 +40,7 @@ impl_resolver_singleton!(
 
 #[derive(Debug, PartialEq)]
 #[cfg_attr(feature = "serde-resolvers", derive(Serialize, Deserialize))]
-pub struct ModsFName(pub usize);
-impl_resolver_singleton!(collect, ModsFName);
-impl_resolver_singleton!(PEImage, ModsFName, |ctx| async {
-    let strings = ctx
-        .scan(
-            Pattern::from_bytes("Mods\0".encode_utf16().flat_map(u16::to_le_bytes).collect())
-                .unwrap(),
-        )
-        .await;
-
-    let refs = join_all(strings.iter().map(|s| {
-        ctx.scan(
-            Pattern::new(format!(
-                "41 b8 01 00 00 00 48 8d 15 X0x{s:X} 48 8d 0d | ?? ?? ?? ?? e9 ?? ?? ?? ??"
-            ))
-            .unwrap(),
-        )
-    }))
-    .await;
-
-    Ok(Self(try_ensure_one(
-        refs.iter()
-            .flatten()
-            .map(|a| Ok(ctx.image().memory.rip4(*a)?)),
-    )?))
-});
-
-#[derive(Debug, PartialEq)]
-#[cfg_attr(feature = "serde-resolvers", derive(Serialize, Deserialize))]
-pub struct Disable(pub usize);
+pub struct Disable(pub u64);
 impl_resolver_singleton!(collect, Disable);
 impl_resolver_singleton!(PEImage, Disable, |ctx| async {
     let patterns = [
@@ -115,27 +59,6 @@ impl_try_collector! {
     pub struct ServerModsResolution {
         pub set_fstring: FOnlineSessionSettingsSetFString,
         pub fill_session_setting: USessionHandlingFSDFillSessionSetttingInner,
-        pub mods_fname: ModsFName,
-    }
-}
-
-impl_try_collector! {
-    #[derive(Debug, PartialEq)]
-    #[cfg_attr(feature = "serde-resolvers", derive(Serialize, Deserialize))]
-    pub struct ServerNameResolution {
-        pub get_server_name: GetServerName,
-    }
-}
-
-impl_try_collector! {
-    #[derive(Debug, PartialEq)]
-    #[cfg_attr(feature = "serde-resolvers", derive(Serialize, Deserialize))]
-    pub struct SaveGameResolution {
-        pub save_game_to_memory: UGameplayStaticsSaveGameToMemory,
-        pub save_game_to_slot: UGameplayStaticsSaveGameToSlot,
-        pub load_game_from_memory: UGameplayStaticsLoadGameFromMemory,
-        pub load_game_from_slot: UGameplayStaticsLoadGameFromSlot,
-        pub does_save_game_exist: UGameplayStaticsDoesSaveGameExist,
     }
 }
 
@@ -159,9 +82,7 @@ impl_collector! {
     #[cfg_attr(feature = "serde-resolvers", derive(Serialize, Deserialize))]
     pub struct HookResolution {
         pub disable: Disable,
-        pub server_name: ServerNameResolution,
         pub server_mods: ServerModsResolution,
-        pub save_game: SaveGameResolution,
         pub core: CoreResolution,
     }
 }

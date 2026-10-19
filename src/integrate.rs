@@ -197,10 +197,6 @@ pub enum IntegrationError {
     JoinError { source: tokio::task::JoinError },
     #[snafu(transparent)]
     LintError { source: LintError },
-    #[snafu(display("self update failed: {source:?}"))]
-    SelfUpdateFailed {
-        source: Box<dyn std::error::Error + Send + Sync>,
-    },
 }
 
 impl IntegrationError {
@@ -312,7 +308,7 @@ pub fn integrate<P: AsRef<Path>>(
         let path_hook_dll = installation
             .binaries_directory()
             .join(installation.installation_type.hook_dll_name());
-        let hook_dll = include_bytes!(env!("CARGO_CDYLIB_FILE_HOOK_hook"));
+        let hook_dll = include_bytes!(env!("MINT_HOOK_DLL"));
         if path_hook_dll
             .metadata()
             .map(|m| m.len() != hook_dll.len() as u64)
@@ -607,7 +603,7 @@ impl<W: Write + Seek> ModBundleWriter<W> {
         mods: &[(ModInfo, PathBuf)],
     ) -> Result<(), IntegrationError> {
         let meta = Meta {
-            version: mint_lib::built_info::version().into(),
+            version: env!("CARGO_PKG_VERSION").into(),
             config,
             mods: mods
                 .iter()
@@ -1076,7 +1072,7 @@ fn patch<C: Seek + Read>(asset: &mut Asset<C>) -> Result<(), IntegrationError> {
     let is_modded = find_function("FSDIsModdedServer");
     let is_modded_sandbox = find_function("FSDIsModdedSandboxServer");
 
-    for (_pi, statements) in statements.iter_mut() {
+    for statements in statements.values_mut() {
         *statements = std::mem::take(statements)
             .into_iter()
             .filter_map(|s| patch_ismodded(is_modded, is_modded_sandbox, s))
@@ -1090,7 +1086,7 @@ fn patch_modding_tab<C: Seek + Read>(asset: &mut Asset<C>) -> Result<(), Integra
     let ver = AssetVersion::new_from(asset);
     let mut statements = extract_tracked_statements(asset, ver, &None);
 
-    for (_pi, statements) in statements.iter_mut() {
+    for statements in statements.values_mut() {
         for statement in statements {
             walk(&mut statement.ex, &|ex| {
                 if let KismetExpression::ExSetArray(arr) = ex

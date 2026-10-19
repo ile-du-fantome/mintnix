@@ -19,7 +19,7 @@ postcard.workspace = true
 fs-err.workspace = true
 tracing.workspace = true
 patternsleuth = { workspace = true, features = ["process-internal", "image-pe"] }
-retour = { git = "https://github.com/Hpmason/retour-rs", features = ["static-detour"] }
+retour = { version = "0.4.0-alpha.4", default-features = false }
 hook_resolvers = { path = "../hook_resolvers" }
 windows = { version = "0.61.3", features = [
   "Win32_Foundation",

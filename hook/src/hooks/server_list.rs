@@ -1,16 +1,18 @@
 use std::ffi::c_void;
+use std::sync::OnceLock;
 
 use anyhow::Result;
+use retour::GenericDetour;
 use serde::{Deserialize, Serialize};
 
 use crate::globals;
 use crate::hooks::ExecFn;
 use crate::ue::{self, FName, FString, TArray, TMap};
 
-retour::static_detour! {
-    static GetServerName: unsafe extern "system" fn(*const c_void, *const c_void) -> *const ue::FString;
-    static USessionHandlingFSDFillSessionSetting: unsafe extern "system" fn(*const c_void, *mut c_void, bool, *mut c_void, *mut c_void);
-}
+type FnFillSessionSetting =
+    unsafe extern "system" fn(*const c_void, *mut c_void, bool, *mut c_void, *mut c_void);
+
+static FILL_SESSION_SETTING: OnceLock<GenericDetour<FnFillSessionSetting>> = OnceLock::new();
 
 pub fn kismet_hooks() -> &'static [(&'static str, ExecFn)] {
     &[(
@@ -20,48 +22,20 @@ pub fn kismet_hooks() -> &'static [(&'static str, ExecFn)] {
 }
 
 pub unsafe fn init_hooks() -> Result<()> {
-    if let Ok(server_name) = &globals().resolution.server_name {
-        unsafe {
-            GetServerName
-                .initialize(
-                    std::mem::transmute(server_name.get_server_name.0),
-                    detour_get_server_name,
-                )?
-                .enable()?;
-        }
-    }
-
     if let Ok(server_mods) = &globals().resolution.server_mods {
         unsafe {
-            USessionHandlingFSDFillSessionSetting
-                .initialize(
-                    std::mem::transmute(server_mods.fill_session_setting.0),
-                    detour_fill_session_setting,
-                )?
-                .enable()?;
+            super::install(
+                &FILL_SESSION_SETTING,
+                std::mem::transmute(server_mods.fill_session_setting.0),
+                detour_fill_session_setting as FnFillSessionSetting,
+            )?;
         }
     }
 
     Ok(())
 }
 
-fn detour_get_server_name(a: *const c_void, b: *const c_void) -> *const ue::FString {
-    unsafe {
-        let name = GetServerName.call(a, b).cast_mut().as_mut().unwrap();
-
-        let mut new_name = widestring::U16String::new();
-        new_name.push_slice([0x5b, 0x4d, 0x4f, 0x44, 0x44, 0x45, 0x44, 0x5d, 0x20]);
-        new_name.push_slice(name.as_slice());
-
-        name.clear();
-        name.extend_from_slice(new_name.as_slice());
-        name.push(0);
-
-        name
-    }
-}
-
-fn detour_fill_session_setting(
+unsafe extern "system" fn detour_fill_session_setting(
     world: *const c_void,
     game_settings: *mut c_void,
     full_server: bool,
@@ -69,7 +43,7 @@ fn detour_fill_session_setting(
     unknown2: *mut c_void,
 ) {
     unsafe {
-        USessionHandlingFSDFillSessionSetting.call(
+        FILL_SESSION_SETTING.get().unwrap().call(
             world,
             game_settings,
             full_server,
