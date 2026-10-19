@@ -1,6 +1,10 @@
+drafts.md
+
 # Build output
 /hook/target
 /target
+/references
+/.direnv
 
 # Windows
 [Dd]esktop.ini

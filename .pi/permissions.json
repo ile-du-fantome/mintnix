@@ -1,0 +1,42 @@
+{
+  "permission": {
+    "edit": {
+      "src/**/*.rs": "allow",
+      "tests/**/*.rs": "allow"
+    },
+    "write": {
+      "src/**/*.rs": "allow",
+      "tests/**/*.rs": "allow"
+    },
+    "bash": {
+      "cd *": "allow",
+      "nix build *": "allow",
+      "nix flake check": "allow",
+      "cargo check *": "allow",
+      "nix develop --command cargo check *": "allow",
+      "cargo tree *": "allow",
+      "nix develop --command cargo tree *": "allow",
+      "cargo test *": "allow",
+      "nix develop --command cargo test *": "allow",
+      "cargo clippy *": "allow",
+      "nix develop --command cargo clippy *": "allow",
+      "cargo fmt *": "allow",
+      "nix develop --command cargo fmt *": "allow",
+      "cargo build *": "allow",
+      "nix develop --command cargo build *": "allow",
+      "cargo --version": "allow",
+      "nix develop --command cargo --version": "allow",
+      "cargo run *": "ask",
+      "nix develop --command cargo run *": "ask",
+      "just check*": "allow",
+      "just test*": "allow",
+      "just clippy": "allow",
+      "just fmt": "allow",
+      "just validate": "allow",
+      "just build*": "allow",
+      "just run*": "ask",
+      "just debug*": "allow",
+      "just release*": "allow"
+    }
+  }
+}

@@ -20,7 +20,7 @@ repak = { git = "https://github.com/trumank/repak", rev = "96410d664ac46c87cf451
 serde = { version = "1.0.195", features = ["derive"] }
 
 [package]
-name = "mint"
+name = "mintnix"
 repository.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -102,8 +102,17 @@ debug = false
 strip = true
 
 [profile.dev]
+opt-level = 1
+
+# Enable full optimizations in the dev profile for dependencies
+[profile.dev.package."*"]
 opt-level = 3
-lto = "off"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
 
 # Config for 'cargo dist'
 [workspace.metadata.dist]
