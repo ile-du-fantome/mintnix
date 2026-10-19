@@ -51,7 +51,7 @@ clap = { version = "4.5.46", features = ["derive"] }
 dialoguer = "0.11.0"
 directories = "6.0.0"
 eframe = "0.37.0"
-egui = "0.37.0"
+egui = { version = "0.37.0", features = ["monochrome_emoji_fonts"] }
 futures = "0.3.31"
 hex = "0.4.3"
 image = { version = "0.25.6", default-features = false, features = ["ico", "jpeg", "png"] }
