@@ -1,27 +1,24 @@
 use std::collections::BTreeSet;
-use std::io::BufWriter;
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand};
-use fs_err as fs;
 use tracing::{debug, info};
-use tracing_appender::non_blocking::WorkerGuard;
-use tracing_subscriber::filter;
 
-use mint::mod_lints::{run_lints, LintId};
-use mint::providers::ProviderFactory;
-use mint::{gui::gui, providers::ModSpecification, state::State};
-use mint::{
-    resolve_ordered_with_provider_init, resolve_unordered_and_integrate_with_provider_init, Dirs,
+use mintnix::mod_lints::{LintId, run_lints};
+use mintnix::providers::ProviderFactory;
+use mintnix::{
+    Dirs, MintError, resolve_ordered_with_provider_init,
+    resolve_unordered_and_integrate_with_provider_init,
 };
+use mintnix::{gui::gui, providers::ModSpecification, state::State};
 
 /// Command line integration tool.
 #[derive(Parser, Debug)]
 struct ActionIntegrate {
-    /// Path to FSD-WindowsNoEditor.pak (FSD-WinGDK.pak for Microsoft Store version) located
-    /// inside the "Deep Rock Galactic" installation directory under FSD/Content/Paks. Only
-    /// necessary if it cannot be found automatically.
+    /// Path to FSD-WindowsNoEditor.pak located inside the "Deep Rock Galactic"
+    /// installation directory under FSD/Content/Paks. Only necessary if it cannot be found
+    /// automatically.
     #[arg(short, long)]
     fsd_pak: Option<PathBuf>,
 
@@ -44,9 +41,9 @@ struct ActionIntegrate {
 /// Integrate a profile
 #[derive(Parser, Debug)]
 struct ActionIntegrateProfile {
-    /// Path to FSD-WindowsNoEditor.pak (FSD-WinGDK.pak for Microsoft Store version) located
-    /// inside the "Deep Rock Galactic" installation directory under FSD/Content/Paks. Only
-    /// necessary if it cannot be found automatically.
+    /// Path to FSD-WindowsNoEditor.pak located inside the "Deep Rock Galactic"
+    /// installation directory under FSD/Content/Paks. Only necessary if it cannot be found
+    /// automatically.
     #[arg(short, long)]
     fsd_pak: Option<PathBuf>,
 
@@ -68,9 +65,9 @@ struct ActionLaunch {
 /// Lint the mod bundle that would be created for a profile.
 #[derive(Parser, Debug)]
 struct ActionLint {
-    /// Path to FSD-WindowsNoEditor.pak (FSD-WinGDK.pak for Microsoft Store version) located
-    /// inside the "Deep Rock Galactic" installation directory under FSD/Content/Paks. Only
-    /// necessary if it cannot be found automatically.
+    /// Path to FSD-WindowsNoEditor.pak located inside the "Deep Rock Galactic"
+    /// installation directory under FSD/Content/Paks. Only necessary if it cannot be found
+    /// automatically.
     #[arg(short, long)]
     fsd_pak: Option<PathBuf>,
 
@@ -87,7 +84,7 @@ enum Action {
 }
 
 #[derive(Parser, Debug)]
-#[command(author, version)]
+#[command(author, version = env!("CARGO_PKG_VERSION"))]
 struct Args {
     #[command(subcommand)]
     action: Option<Action>,
@@ -98,13 +95,6 @@ struct Args {
 }
 
 fn main() -> Result<()> {
-    #[cfg(target_os = "windows")]
-    {
-        // Try to enable ANSI code support on Windows 10 for console. If it fails, then whatever
-        // *shrugs*.
-        let _res = ansi_term::enable_ansi_support();
-    }
-
     let args = Args::parse();
 
     let dirs = args
@@ -113,8 +103,9 @@ fn main() -> Result<()> {
         .map(Dirs::from_path)
         .unwrap_or_else(Dirs::default_xdg)?;
 
-    std::env::set_var("RUST_BACKTRACE", "1");
-    let _guard = setup_logging(&dirs)?;
+    unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
+
+    let _guard = mint_lib::setup_logging(dirs.data_dir.join("mint.log"), "mint")?;
     debug!("logging setup complete");
 
     info!("config dir = {}", dirs.config_dir.display());
@@ -157,67 +148,12 @@ fn main() -> Result<()> {
     }
 }
 
-fn setup_logging(dirs: &Dirs) -> Result<WorkerGuard> {
-    use tracing::metadata::LevelFilter;
-    use tracing::Level;
-    use tracing_subscriber::prelude::*;
-    use tracing_subscriber::{
-        field::RecordFields,
-        fmt::{
-            self,
-            format::{Pretty, Writer},
-            FormatFields,
-        },
-        EnvFilter,
-    };
-
-    /// Workaround for <https://github.com/tokio-rs/tracing/issues/1817>.
-    struct NewType(Pretty);
-
-    impl<'writer> FormatFields<'writer> for NewType {
-        fn format_fields<R: RecordFields>(
-            &self,
-            writer: Writer<'writer>,
-            fields: R,
-        ) -> core::fmt::Result {
-            self.0.format_fields(writer, fields)
-        }
-    }
-
-    let log_path = dirs.data_dir.join("mint.log");
-    let f = fs::File::create(&log_path)?;
-    let writer = BufWriter::new(f);
-    let (log_file_appender, guard) = tracing_appender::non_blocking(writer);
-    let debug_file_log = fmt::layer()
-        .with_writer(log_file_appender)
-        .fmt_fields(NewType(Pretty::default()))
-        .with_ansi(false)
-        .with_filter(filter::Targets::new().with_target("mint", Level::DEBUG));
-    let stderr_log = fmt::layer()
-        .with_writer(std::io::stderr)
-        .compact()
-        .with_level(true)
-        .with_target(true)
-        .without_time()
-        .with_filter(
-            EnvFilter::builder()
-                .with_default_directive(LevelFilter::INFO.into())
-                .from_env_lossy(),
-        );
-    let subscriber = tracing_subscriber::registry()
-        .with(stderr_log)
-        .with(debug_file_log);
-
-    tracing::subscriber::set_global_default(subscriber)?;
-
-    debug!("tracing subscriber setup");
-    info!("writing logs to {:?}", log_path.display());
-
-    Ok(guard)
-}
-
 #[tracing::instrument(skip(state))]
-fn init_provider(state: &mut State, url: String, factory: &ProviderFactory) -> Result<()> {
+fn init_provider(
+    state: &mut State,
+    url: String,
+    factory: &ProviderFactory,
+) -> Result<(), MintError> {
     info!("initializing provider for {:?}", url);
 
     let params = state
@@ -236,7 +172,7 @@ fn init_provider(state: &mut State, url: String, factory: &ProviderFactory) -> R
             params.insert(p.id.to_owned(), value);
         }
     }
-    state.store.add_provider(factory, params)
+    Ok(state.store.add_provider(factory, params)?)
 }
 
 fn get_pak_path(state: &State, arg: &Option<PathBuf>) -> Result<PathBuf> {
@@ -265,6 +201,7 @@ async fn action_integrate(dirs: Dirs, action: ActionIntegrate) -> Result<()> {
         init_provider,
     )
     .await
+    .map_err(|e| anyhow!("{}", e))
 }
 
 async fn action_integrate_profile(dirs: Dirs, action: ActionIntegrateProfile) -> Result<()> {
@@ -285,6 +222,7 @@ async fn action_integrate_profile(dirs: Dirs, action: ActionIntegrateProfile) ->
         init_provider,
     )
     .await
+    .map_err(|e| anyhow!("{}", e))
 }
 
 async fn action_lint(dirs: Dirs, action: ActionLint) -> Result<()> {
@@ -317,6 +255,6 @@ async fn action_lint(dirs: Dirs, action: ActionLint) -> Result<()> {
         )
     })
     .await??;
-    println!("{:#?}", report);
+    println!("{report:#?}");
     Ok(())
 }

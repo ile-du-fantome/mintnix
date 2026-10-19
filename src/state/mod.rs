@@ -7,19 +7,18 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::{bail, Context, Result};
 use fs_err as fs;
-use mint_lib::DRGInstallation;
 use serde::{Deserialize, Serialize};
-
-use crate::{
-    gui::GuiTheme,
-    providers::{ModInfo, ModSpecification, ModStore},
-    Dirs,
-};
-use crate::{gui::SortBy};
+use snafu::prelude::*;
 
 use self::config::ConfigWrapper;
+use crate::{
+    Dirs,
+    gui::GuiTheme,
+    providers::{ModInfo, ModSpecification, ModStore},
+};
+use crate::{gui::SortBy, providers::ProviderError};
+use mint_lib::{DRGInstallation, mod_info::MetaConfig};
 
 /// Mod configuration, holds ModSpecification as well as other metadata
 #[derive(Debug, Clone, Hash, Serialize, Deserialize)]
@@ -77,9 +76,7 @@ impl From<ModProfile!["0.0.0"]> for ModProfile!["0.1.0"] {
 
 impl From<ModProfile!["0.1.0"]> for ModProfile!["0.2.0"] {
     fn from(legacy: ModProfile!["0.1.0"]) -> Self {
-        Self {
-            mods: legacy.mods,
-        }
+        Self { mods: legacy.mods }
     }
 }
 
@@ -114,7 +111,7 @@ impl ModData!["0.2.0"] {
         mut g: G,
         mut p: P,
     ) {
-        for mod_or_group in &self.profiles.get(profile).unwrap().mods {
+        for ref mod_or_group in &self.profiles.get(profile).unwrap().mods {
             match mod_or_group {
                 ModOrGroup::Group {
                     group_name,
@@ -148,7 +145,7 @@ impl ModData!["0.2.0"] {
         mut g: G,
         mut p: P,
     ) {
-        for mod_or_group in &mut self.profiles.get_mut(profile).unwrap().mods {
+        for ref mut mod_or_group in &mut self.profiles.get_mut(profile).unwrap().mods {
             match mod_or_group {
                 ModOrGroup::Group {
                     group_name,
@@ -381,67 +378,6 @@ impl ModData!["0.2.0"] {
 
 #[obake::versioned]
 #[obake(version("0.0.0"))]
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ModNotes {
-    pub notes: HashMap<String, String>,
-}
-
-impl ModNotes!["0.0.0"] {
-    pub fn get_note_key(info: &ModInfo) -> String {
-        if let Some(modio_id) = info.modio_id {
-            format!("modio:{}", modio_id)
-        } else {
-            info.spec.url.clone()
-        }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "version")]
-pub enum VersionAnnotatedModNotes {
-    #[serde(rename = "0.0.0")]
-    V0_0_0(ModNotes!["0.0.0"]),
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum MaybeVersionedModNotes {
-    Versioned(VersionAnnotatedModNotes),
-    Legacy(ModNotes!["0.0.0"]),
-}
-
-impl Default for MaybeVersionedModNotes {
-    fn default() -> Self {
-        MaybeVersionedModNotes::Versioned(Default::default())
-    }
-}
-
-impl Default for VersionAnnotatedModNotes {
-    fn default() -> Self {
-        VersionAnnotatedModNotes::V0_0_0(Default::default())
-    }
-}
-
-impl Deref for VersionAnnotatedModNotes {
-    type Target = ModNotes!["0.0.0"];
-
-    fn deref(&self) -> &Self::Target {
-        match self {
-            VersionAnnotatedModNotes::V0_0_0(notes) => notes,
-        }
-    }
-}
-
-impl DerefMut for VersionAnnotatedModNotes {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        match self {
-            VersionAnnotatedModNotes::V0_0_0(notes) => notes,
-        }
-    }
-}
-
-#[obake::versioned]
-#[obake(version("0.0.0"))]
 #[obake(version("0.1.0"))]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
@@ -451,8 +387,6 @@ pub struct Config {
     pub sorting_config: Option<SortingConfig>,
     #[serde(default = "default_true")]
     pub confirm_deletion: bool,
-    #[serde(default = "default_true")]
-    pub show_changelog: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -532,7 +466,6 @@ impl Default for Config!["0.0.0"] {
             gui_theme: None,
             sorting_config: None,
             confirm_deletion: true,
-            show_changelog: true,
         }
     }
 }
@@ -547,7 +480,6 @@ impl Default for Config!["0.1.0"] {
             gui_theme: None,
             sorting_config: None,
             confirm_deletion: true,
-            show_changelog: true,
         }
     }
 }
@@ -560,9 +492,101 @@ impl From<Config!["0.0.0"]> for Config!["0.1.0"] {
             gui_theme: legacy.gui_theme,
             sorting_config: legacy.sorting_config,
             confirm_deletion: legacy.confirm_deletion,
-            show_changelog: legacy.show_changelog,
         }
     }
+}
+
+impl From<&VersionAnnotatedConfig> for MetaConfig {
+    fn from(_value: &VersionAnnotatedConfig) -> Self {
+        MetaConfig {}
+    }
+}
+
+#[obake::versioned]
+#[obake(version("0.0.0"))]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ModNotes {
+    pub notes: HashMap<String, String>,
+}
+
+impl ModNotes!["0.0.0"] {
+    pub fn get_note_key(info: &ModInfo) -> String {
+        if let Some(modio_id) = info.modio_id {
+            format!("modio:{modio_id}")
+        } else {
+            info.spec.url.clone()
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "version")]
+pub enum VersionAnnotatedModNotes {
+    #[serde(rename = "0.0.0")]
+    V0_0_0(ModNotes!["0.0.0"]),
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum MaybeVersionedModNotes {
+    Versioned(VersionAnnotatedModNotes),
+    Legacy(ModNotes!["0.0.0"]),
+}
+
+impl Default for MaybeVersionedModNotes {
+    fn default() -> Self {
+        MaybeVersionedModNotes::Versioned(Default::default())
+    }
+}
+
+impl Default for VersionAnnotatedModNotes {
+    fn default() -> Self {
+        VersionAnnotatedModNotes::V0_0_0(Default::default())
+    }
+}
+
+impl Deref for VersionAnnotatedModNotes {
+    type Target = ModNotes!["0.0.0"];
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            VersionAnnotatedModNotes::V0_0_0(notes) => notes,
+        }
+    }
+}
+
+impl DerefMut for VersionAnnotatedModNotes {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        match self {
+            VersionAnnotatedModNotes::V0_0_0(notes) => notes,
+        }
+    }
+}
+
+#[derive(Debug, Snafu)]
+pub enum StateError {
+    #[snafu(display("failed to deserialize user config"))]
+    CfgDeserializationFailed { source: serde_json::Error },
+    #[snafu(display("unsupported config version"))]
+    UnsupportedCfgVersion,
+    #[snafu(display("failed to read config.json"))]
+    CfgReadFailed { source: std::io::Error },
+    #[snafu(display("failed to save config"))]
+    CfgSaveFailed { source: std::io::Error },
+    #[snafu(display("failed to serialize user config"))]
+    CfgSerializationFailed { source: serde_json::Error },
+    #[snafu(transparent)]
+    IoError { source: std::io::Error },
+    #[snafu(transparent)]
+    PersistError { source: tempfile::PersistError },
+    #[snafu(transparent)]
+    ProviderError { source: ProviderError },
+    #[snafu(display("failed to deserialize mod data"))]
+    ModDataDeserializationFailed { source: serde_json::Error },
+    #[snafu(display("failed to deserialize legacy profiles"))]
+    LegacyProfilesDeserializationFailed { source: serde_json::Error },
+    #[snafu(display("failed to deserialize mod notes"))]
+    ModNotesDeserializationFailed { source: serde_json::Error },
 }
 
 pub struct State {
@@ -574,7 +598,7 @@ pub struct State {
 }
 
 impl State {
-    pub fn init(dirs: Dirs) -> Result<Self> {
+    pub fn init(dirs: Dirs) -> Result<Self, StateError> {
         let config_path = dirs.config_dir.join("config.json");
 
         let config = read_config_or_default(&config_path)?;
@@ -604,18 +628,16 @@ impl State {
     }
 }
 
-fn read_config_or_default(
-    config_path: &PathBuf
-) -> Result<VersionAnnotatedConfig> {
+fn read_config_or_default(config_path: &PathBuf) -> Result<VersionAnnotatedConfig, StateError> {
     Ok(match fs::read(config_path) {
         Ok(buf) => {
             let config = serde_json::from_slice::<MaybeVersionedConfig>(&buf)
-                .context("failed to deserialize user config into maybe versioned config")?;
+                .context(CfgDeserializationFailedSnafu)?;
             match config {
                 MaybeVersionedConfig::Versioned(v) => match v {
                     VersionAnnotatedConfig::V0_0_0(v) => VersionAnnotatedConfig::V0_1_0(v.into()),
                     VersionAnnotatedConfig::V0_1_0(v) => VersionAnnotatedConfig::V0_1_0(v),
-                    VersionAnnotatedConfig::Unsupported => bail!("unsupported config version"),
+                    VersionAnnotatedConfig::Unsupported => UnsupportedCfgVersionSnafu.fail()?,
                 },
                 MaybeVersionedConfig::Legacy(legacy) => {
                     VersionAnnotatedConfig::V0_1_0(Config_v0_1_0 {
@@ -627,39 +649,42 @@ fn read_config_or_default(
             }
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => VersionAnnotatedConfig::default(),
-        Err(e) => Err(e).context("failed to read `config.json`")?,
+        Err(e) => Err(e)?,
     })
 }
 
 fn read_mod_data_or_default(
     mod_data_path: &PathBuf,
     legacy_mod_profiles_path: PathBuf,
-) -> Result<VersionAnnotatedModData> {
+) -> Result<VersionAnnotatedModData, StateError> {
     let mod_data = match fs::read(mod_data_path) {
         Ok(buf) => serde_json::from_slice::<MaybeVersionedModData>(&buf)
-            .context("failed to deserialize existing `mod_data.json`")?,
+            .context(ModDataDeserializationFailedSnafu)?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             match fs::read(&legacy_mod_profiles_path) {
                 Ok(buf) => {
                     let mod_data = serde_json::from_slice::<MaybeVersionedModData>(&buf)
-                        .context("failed to deserialize legacy `profiles.json`")?;
-                    fs::remove_file(&legacy_mod_profiles_path)
-                        .context("failed to remove legacy `profiles.json` while migrating")?;
+                        .context(LegacyProfilesDeserializationFailedSnafu)?;
+                    fs::remove_file(&legacy_mod_profiles_path)?;
                     mod_data
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                     MaybeVersionedModData::default()
                 }
-                Err(e) => Err(e).context("failed to read legacy `profiles`.json")?,
+                Err(e) => Err(e)?,
             }
         }
-        Err(e) => Err(e).context("failed to read `mod_data`.json")?,
+        Err(e) => Err(e)?,
     };
 
     let mod_data = match mod_data {
-        MaybeVersionedModData::Legacy(legacy) => VersionAnnotatedModData::V0_1_0(legacy.into()),
+        MaybeVersionedModData::Legacy(legacy) => {
+            VersionAnnotatedModData::V0_2_0(ModData_v0_1_0::from(legacy).into())
+        }
         MaybeVersionedModData::Versioned(v) => match v {
-            VersionAnnotatedModData::V0_0_0(md) => VersionAnnotatedModData::V0_1_0(md.into()),
+            VersionAnnotatedModData::V0_0_0(md) => {
+                VersionAnnotatedModData::V0_2_0(ModData_v0_1_0::from(md).into())
+            }
             VersionAnnotatedModData::V0_1_0(md) => VersionAnnotatedModData::V0_2_0(md.into()),
             VersionAnnotatedModData::V0_2_0(md) => VersionAnnotatedModData::V0_2_0(md),
         },
@@ -669,23 +694,19 @@ fn read_mod_data_or_default(
 }
 
 fn read_mod_notes_or_default(
-    mod_notes_path: &PathBuf
-) -> Result<VersionAnnotatedModNotes> {
-    Ok(match std::fs::read(mod_notes_path) {
+    mod_notes_path: &PathBuf,
+) -> Result<VersionAnnotatedModNotes, StateError> {
+    Ok(match fs::read(mod_notes_path) {
         Ok(buf) => {
             let notes = serde_json::from_slice::<MaybeVersionedModNotes>(&buf)
-                .context("failed to deserialize existing `mod_notes.json`")?;
+                .context(ModNotesDeserializationFailedSnafu)?;
             match notes {
-                MaybeVersionedModNotes::Legacy(legacy) => {
-                    VersionAnnotatedModNotes::V0_0_0(legacy)
-                }
+                MaybeVersionedModNotes::Legacy(legacy) => VersionAnnotatedModNotes::V0_0_0(legacy),
                 MaybeVersionedModNotes::Versioned(v) => v,
             }
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            VersionAnnotatedModNotes::default()
-        }
-        Err(e) => Err(e).context("failed to read `mod_notes.json`")?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => VersionAnnotatedModNotes::default(),
+        Err(e) => Err(e)?,
     })
 }
 

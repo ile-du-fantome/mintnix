@@ -16,9 +16,26 @@
         "type": "github"
       }
     },
+    "oodleue-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1780602171,
+        "narHash": "sha256-8Vbxk7JSMyFAL2nSb5a5YiI0BGa1f9NPqtR6iCAbHjc=",
+        "owner": "WorkingRobot",
+        "repo": "OodleUE",
+        "rev": "5e38cb6c99c588b51cde0cae4a6420d6bc865605",
+        "type": "github"
+      },
+      "original": {
+        "owner": "WorkingRobot",
+        "repo": "OodleUE",
+        "type": "github"
+      }
+    },
     "root": {
       "inputs": {
         "nixpkgs": "nixpkgs",
+        "oodleue-src": "oodleue-src",
         "rust-overlay": "rust-overlay"
       }
     },

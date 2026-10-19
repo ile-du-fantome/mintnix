@@ -1,34 +1,28 @@
 use std::collections::BTreeSet;
 use std::ops::DerefMut;
-use std::time::SystemTime;
-use std::{
-    collections::{HashMap, HashSet},
-    path::PathBuf,
-    sync::Arc,
-};
+use std::{collections::HashMap, sync::Arc};
 
-use anyhow::{Context, Result};
-use eframe::egui;
+use anyhow::Result;
 use tokio::{
     sync::mpsc::{self, Sender},
     task::JoinHandle,
 };
-use tracing::{error, info};
-
-use crate::gui::LastAction;
-use crate::integrate::{IntegrationErr, IntegrationErrKind};
-use crate::mod_lints::{LintId, LintReport};
-use crate::state::{ModData_v0_2_0 as ModData, ModOrGroup};
-use crate::{
-    error::IntegrationError,
-    providers::{FetchProgress, ModInfo, ModResolution, ModSpecification, ModStore},
-    state::ModConfig,
-};
+use tracing::*;
 
 use super::{
+    App, SpecFetchProgress, WindowProviderParameters,
     request_counter::{RequestCounter, RequestID},
-    App, GitHubRelease, SpecFetchProgress, WindowProviderParameters,
 };
+use crate::gui::LastAction;
+use crate::integrate::*;
+use crate::mod_lints::{LintId, LintReport};
+use crate::state::{ModData_v0_2_0 as ModData, ModOrGroup};
+use crate::*;
+use crate::{
+    providers::{FetchProgress, ModInfo, ModStore},
+    state::ModConfig,
+};
+use mint_lib::mod_info::MetaConfig;
 
 #[derive(Debug)]
 pub struct MessageHandle<S> {
@@ -43,9 +37,8 @@ pub enum Message {
     Integrate(Integrate),
     FetchModProgress(FetchModProgress),
     UpdateCache(UpdateCache),
-    CheckUpdates(CheckUpdates),
-    LintMods(LintMods),
-    FetchModDetails(FetchModDetails),
+    FetchModDetails(Box<FetchModDetails>),
+    LintMods(Box<LintMods>),
 }
 
 impl Message {
@@ -55,9 +48,8 @@ impl Message {
             Self::Integrate(msg) => msg.receive(app),
             Self::FetchModProgress(msg) => msg.receive(app),
             Self::UpdateCache(msg) => msg.receive(app),
-            Self::CheckUpdates(msg) => msg.receive(app),
-            Self::LintMods(msg) => msg.receive(app),
             Self::FetchModDetails(msg) => msg.receive(app),
+            Self::LintMods(msg) => msg.receive(app),
         }
     }
 }
@@ -66,7 +58,7 @@ impl Message {
 pub struct ResolveMods {
     rid: RequestID,
     specs: Vec<ModSpecification>,
-    result: Result<HashMap<ModSpecification, ModInfo>>,
+    result: Result<HashMap<ModSpecification, ModInfo>, ProviderError>,
     is_dependency: bool,
 }
 
@@ -79,8 +71,8 @@ impl ResolveMods {
     ) {
         let rid = app.request_counter.next();
         let store = app.state.store.clone();
-        let tx = app.tx.clone();
         let ctx = ctx.clone();
+        let tx = app.tx.clone();
         let handle = tokio::spawn(async move {
             let result = store.resolve_mods(&specs, false).await;
             tx.send(Message::ResolveMods(Self {
@@ -156,20 +148,19 @@ impl ResolveMods {
                     app.resolve_mod.clear();
                     app.state.mod_data.save().unwrap();
                     app.last_action = Some(LastAction::success(
-                        "Mods successfully resolved".to_string(),
+                        "mods successfully resolved".to_string(),
                     ));
                 }
-                Err(e) => match e.downcast::<IntegrationError>() {
-                    Ok(IntegrationError::NoProvider { url: _, factory }) => {
-                        app.window_provider_parameters =
-                            Some(WindowProviderParameters::new(factory, &app.state));
-                        app.last_action = Some(LastAction::failure("No provider".to_string()));
-                    }
-                    Err(e) => {
-                        error!("{:#?}\n{}", e, e.backtrace());
-                        app.last_action = Some(LastAction::failure(e.to_string()));
-                    }
-                },
+                Err(ProviderError::NoProvider { url: _, factory }) => {
+                    app.window_provider_parameters =
+                        Some(WindowProviderParameters::new(factory, &app.state));
+                    app.last_action = Some(LastAction::failure("no provider".to_string()));
+                }
+                Err(e) => {
+                    error!("{}", e);
+                    app.problematic_mod_id = e.opt_mod_id();
+                    app.last_action = Some(LastAction::failure(e.to_string()));
+                }
             }
             app.resolve_mod_rid = None;
         }
@@ -179,7 +170,7 @@ impl ResolveMods {
 #[derive(Debug)]
 pub struct Integrate {
     rid: RequestID,
-    result: Result<(), IntegrationErr>,
+    result: Result<(), IntegrationError>,
 }
 
 impl Integrate {
@@ -188,6 +179,7 @@ impl Integrate {
         store: Arc<ModStore>,
         mods: Vec<ModSpecification>,
         fsd_pak: PathBuf,
+        config: MetaConfig,
         tx: Sender<Message>,
         ctx: egui::Context,
     ) -> MessageHandle<HashMap<ModSpecification, SpecFetchProgress>> {
@@ -195,7 +187,9 @@ impl Integrate {
         MessageHandle {
             rid,
             handle: tokio::task::spawn(async move {
-                let res = integrate_async(store, ctx.clone(), mods, fsd_pak, rid, tx.clone()).await;
+                let res =
+                    integrate_async(store, ctx.clone(), mods, fsd_pak, config, rid, tx.clone())
+                        .await;
                 tx.send(Message::Integrate(Integrate { rid, result: res }))
                     .await
                     .unwrap();
@@ -204,43 +198,27 @@ impl Integrate {
             state: Default::default(),
         }
     }
+
     fn receive(self, app: &mut App) {
         if Some(self.rid) == app.integrate_rid.as_ref().map(|r| r.rid) {
             match self.result {
                 Ok(()) => {
                     info!("integration complete");
-                    app.last_action = Some(LastAction::success("DLL hook and mod bundle installed".to_string()));
+                    app.last_action = Some(LastAction::success("integration complete".to_string()));
                 }
-                Err(IntegrationErr { mod_ctxt, kind }) => match kind {
-                    IntegrationErrKind::Generic(e) => match e.downcast::<IntegrationError>() {
-                        Ok(IntegrationError::NoProvider { url: _, factory }) => {
-                            app.window_provider_parameters =
-                                Some(WindowProviderParameters::new(factory, &app.state));
-                            app.last_action = Some(LastAction::failure("No provider".to_string()));
-                        }
-                        Err(e) => {
-                            match mod_ctxt {
-                                        Some(mod_ctxt) => error!("error encountered during integration while working with mod `{:?}`\n{:#?}\n{}", mod_ctxt, e, e.backtrace()),
-                                        None => error!("{:#?}\n{}", e, e.backtrace()),
-                                    };
-                            app.last_action = Some(LastAction::failure(e.to_string()));
-                        }
-                    },
-                    IntegrationErrKind::Repak(e) => {
-                        match mod_ctxt {
-                                Some(mod_ctxt) => error!("`repak` error encountered during integration while working with mod `{:?}`\n{:#?}", mod_ctxt, e),
-                                None => error!("`repak` error encountered during integration: {:#?}", e),
-                            };
-                        app.last_action = Some(LastAction::failure(e.to_string()));
-                    }
-                    IntegrationErrKind::UnrealAsset(e) => {
-                        match mod_ctxt {
-                                Some(mod_ctxt) => error!("`unreal_asset` error encountered during integration while working with mod `{:?}`\n{:#?}", mod_ctxt, e),
-                                None => error!("`unreal_asset` error encountered during integration: {:#?}", e),
-                            };
-                        app.last_action = Some(LastAction::failure(e.to_string()));
-                    }
-                },
+                Err(ref e)
+                    if let IntegrationError::ProviderError { source } = e
+                        && let ProviderError::NoProvider { url: _, factory } = source =>
+                {
+                    app.window_provider_parameters =
+                        Some(WindowProviderParameters::new(factory, &app.state));
+                    app.last_action = Some(LastAction::failure("no provider".to_string()));
+                }
+                Err(e) => {
+                    error!("{}", e);
+                    app.problematic_mod_id = e.opt_mod_id();
+                    app.last_action = Some(LastAction::failure(e.to_string()));
+                }
             }
             app.integrate_rid = None;
         }
@@ -256,10 +234,10 @@ pub struct FetchModProgress {
 
 impl FetchModProgress {
     fn receive(self, app: &mut App) {
-        if let Some(MessageHandle { rid, state, .. }) = &mut app.integrate_rid {
-            if *rid == self.rid {
-                state.insert(self.spec, self.progress);
-            }
+        if let Some(MessageHandle { rid, state, .. }) = &mut app.integrate_rid
+            && *rid == self.rid
+        {
+            state.insert(self.spec, self.progress);
         }
     }
 }
@@ -267,7 +245,7 @@ impl FetchModProgress {
 #[derive(Debug)]
 pub struct UpdateCache {
     rid: RequestID,
-    result: Result<()>,
+    result: Result<(), ProviderError>,
 }
 
 impl UpdateCache {
@@ -295,82 +273,21 @@ impl UpdateCache {
                 Ok(()) => {
                     info!("cache update complete");
                     app.last_action = Some(LastAction::success(
-                        "Cache updated".to_string(),
+                        "successfully updated cache".to_string(),
                     ));
                 }
-                Err(e) => match e.downcast::<IntegrationError>() {
-                    // TODO make provider initializing more generic
-                    Ok(IntegrationError::NoProvider { url: _, factory }) => {
-                        app.window_provider_parameters =
-                            Some(WindowProviderParameters::new(factory, &app.state));
-                        app.last_action = Some(LastAction::failure("No provider".to_string()));
-                    }
-                    Err(e) => {
-                        error!("{:#?}\n{}", e, e.backtrace());
-                        app.last_action = Some(LastAction::failure(e.to_string()));
-                    }
-                },
-            }
-            app.update_rid = None;
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct CheckUpdates {
-    rid: RequestID,
-    result: Result<GitHubRelease>,
-}
-
-impl CheckUpdates {
-    pub fn send(app: &mut App, ctx: &egui::Context) {
-        let rid = app.request_counter.next();
-        let tx = app.tx.clone();
-        let ctx = ctx.clone();
-
-        async fn req() -> Result<GitHubRelease> {
-            Ok(reqwest::Client::builder()
-                .user_agent("Strappazzon/drg-mint-notag")
-                .build()?
-                .get("https://api.github.com/repos/Strappazzon/drg-mint-notag/releases/latest")
-                .send()
-                .await?
-                .json::<GitHubRelease>()
-                .await?)
-        }
-
-        let handle = tokio::spawn(async move {
-            tx.send(Message::CheckUpdates(Self {
-                rid,
-                result: req().await,
-            }))
-            .await
-            .unwrap();
-            ctx.request_repaint();
-        });
-        app.check_updates_rid = Some(MessageHandle {
-            rid,
-            handle,
-            state: (),
-        });
-    }
-    fn receive(self, app: &mut App) {
-        if Some(self.rid) == app.check_updates_rid.as_ref().map(|r| r.rid) {
-            app.check_updates_rid = None;
-            if let Ok(release) = self.result {
-                if let (Ok(version), Some(Ok(release_version))) = (
-                    semver::Version::parse(env!("CARGO_PKG_VERSION")),
-                    release
-                        .tag_name
-                        .strip_prefix('v')
-                        .map(semver::Version::parse),
-                ) {
-                    if release_version > version {
-                        app.available_update = Some(release);
-                        app.show_update_time = Some(SystemTime::now());
-                    }
+                Err(ProviderError::NoProvider { url: _, factory }) => {
+                    app.window_provider_parameters =
+                        Some(WindowProviderParameters::new(factory, &app.state));
+                    app.last_action = Some(LastAction::failure("no provider".to_string()));
+                }
+                Err(e) => {
+                    error!("{}", e);
+                    app.problematic_mod_id = e.opt_mod_id();
+                    app.last_action = Some(LastAction::failure(e.to_string()));
                 }
             }
+            app.update_rid = None;
         }
     }
 }
@@ -380,18 +297,13 @@ async fn integrate_async(
     ctx: egui::Context,
     mod_specs: Vec<ModSpecification>,
     fsd_pak: PathBuf,
+    config: MetaConfig,
     rid: RequestID,
     message_tx: Sender<Message>,
-) -> Result<(), IntegrationErr> {
+) -> Result<(), IntegrationError> {
     let update = false;
 
-    let mods = store
-        .resolve_mods(&mod_specs, update)
-        .await
-        .map_err(|e| IntegrationErr {
-            mod_ctxt: None,
-            kind: IntegrationErrKind::Generic(e),
-        })?;
+    let mods = store.resolve_mods(&mod_specs, update).await?;
 
     let to_integrate = mod_specs
         .iter()
@@ -404,7 +316,7 @@ async fn integrate_async(
     let urls = to_integrate
         .iter()
         .map(|m| &m.resolution)
-        .collect::<Vec<&ModResolution>>();
+        .collect::<Vec<_>>();
 
     let (tx, mut rx) = mpsc::channel::<FetchProgress>(10);
 
@@ -424,22 +336,16 @@ async fn integrate_async(
         }
     });
 
-    let paths = store
-        .fetch_mods(&urls, update, Some(tx))
-        .await
-        .map_err(|e| IntegrationErr {
-            mod_ctxt: None,
-            kind: IntegrationErrKind::Generic(e),
-        })?;
+    let paths = store.fetch_mods_ordered(&urls, update, Some(tx)).await?;
 
     tokio::task::spawn_blocking(|| {
-        crate::integrate::integrate(fsd_pak, to_integrate.into_iter().zip(paths).collect())
+        crate::integrate::integrate(
+            fsd_pak,
+            config,
+            to_integrate.into_iter().zip(paths).collect(),
+        )
     })
-    .await
-    .map_err(|e| IntegrationErr {
-        mod_ctxt: None,
-        kind: IntegrationErrKind::Generic(e.into()),
-    })??;
+    .await??;
 
     Ok(())
 }
@@ -447,7 +353,7 @@ async fn integrate_async(
 #[derive(Debug)]
 pub struct LintMods {
     rid: RequestID,
-    result: Result<LintReport>,
+    result: Result<LintReport, IntegrationError>,
 }
 
 impl LintMods {
@@ -477,14 +383,18 @@ impl LintMods {
                     )
                 })
                 .await
-                .unwrap(),
+                .unwrap()
+                .map_err(Into::into),
                 Err(e) => Err(e),
             };
 
-            tx.send(Message::LintMods(LintMods {
-                rid,
-                result: report_res,
-            }))
+            tx.send(Message::LintMods(
+                LintMods {
+                    rid,
+                    result: report_res,
+                }
+                .into(),
+            ))
             .await
             .unwrap();
             ctx.request_repaint();
@@ -496,6 +406,7 @@ impl LintMods {
             state: Default::default(),
         }
     }
+
     fn receive(self, app: &mut App) {
         if Some(self.rid) == app.lint_rid.as_ref().map(|r| r.rid) {
             match self.result {
@@ -503,19 +414,21 @@ impl LintMods {
                     info!("lint mod report complete");
                     app.lint_report = Some(report);
                     app.last_action =
-                        Some(LastAction::success("Mod lint report complete".to_string()));
+                        Some(LastAction::success("lint mod report complete".to_string()));
                 }
-                Err(e) => match e.downcast::<IntegrationError>() {
-                    Ok(IntegrationError::NoProvider { url: _, factory }) => {
-                        app.window_provider_parameters =
-                            Some(WindowProviderParameters::new(factory, &app.state));
-                        app.last_action = Some(LastAction::failure("No provider".to_string()));
-                    }
-                    Err(e) => {
-                        error!("{:#?}\n{}", e, e.backtrace());
-                        app.last_action = Some(LastAction::failure(e.to_string()));
-                    }
-                },
+                Err(ref e)
+                    if let IntegrationError::ProviderError { source } = e
+                        && let ProviderError::NoProvider { url: _, factory } = source =>
+                {
+                    app.window_provider_parameters =
+                        Some(WindowProviderParameters::new(factory, &app.state));
+                    app.last_action = Some(LastAction::failure("no provider".to_string()));
+                }
+                Err(e) => {
+                    error!("{}", e);
+                    app.problematic_mod_id = e.opt_mod_id();
+                    app.last_action = Some(LastAction::failure(e.to_string()));
+                }
             }
             app.integrate_rid = None;
         }
@@ -528,7 +441,7 @@ async fn resolve_async_ordered(
     mod_specs: Vec<ModSpecification>,
     rid: RequestID,
     message_tx: Sender<Message>,
-) -> Result<Vec<PathBuf>> {
+) -> Result<Vec<PathBuf>, IntegrationError> {
     let update = false;
 
     let mods = store.resolve_mods(&mod_specs, update).await?;
@@ -564,7 +477,7 @@ async fn resolve_async_ordered(
         }
     });
 
-    store.fetch_mods_ordered(&urls, update, Some(tx)).await
+    Ok(store.fetch_mods_ordered(&urls, update, Some(tx)).await?)
 }
 
 #[derive(Debug)]
@@ -597,11 +510,11 @@ impl FetchModDetails {
             rid,
             handle: tokio::task::spawn(async move {
                 let result = fetch_modio_mod_details(oauth_token, modio_id).await;
-                tx.send(Message::FetchModDetails(FetchModDetails {
+                tx.send(Message::FetchModDetails(Box::new(FetchModDetails {
                     rid,
                     result,
                     modio_id,
-                }))
+                })))
                 .await
                 .unwrap();
                 ctx.request_repaint();
@@ -626,7 +539,9 @@ impl FetchModDetails {
                     error!("fetch mod details failed");
                     error!("{:#?}", e);
                     to_remove = Some(self.modio_id);
-                    app.last_action = Some(LastAction::failure("Failed to fetch mod details".to_string()));
+                    app.last_action = Some(LastAction::failure(
+                        "Failed to fetch mod details".to_string(),
+                    ));
                 }
             }
         }
@@ -639,7 +554,7 @@ impl FetchModDetails {
 
 async fn fetch_modio_mod_details(oauth_token: String, modio_id: u32) -> Result<ModDetails> {
     use crate::providers::modio::{LoggingMiddleware, MODIO_DRG_ID};
-    use modio::{filter::prelude::*, Credentials, Modio};
+    use modio::{Credentials, Modio, filter::prelude::*};
 
     let credentials = Credentials::with_token("", oauth_token);
     let client = reqwest_middleware::ClientBuilder::new(reqwest::Client::new())
@@ -653,7 +568,7 @@ async fn fetch_modio_mod_details(oauth_token: String, modio_id: u32) -> Result<M
         .search(Id::eq(modio_id))
         .first()
         .await?
-        .with_context(|| format!("mod {modio_id} not found"))?;
+        .ok_or_else(|| anyhow::anyhow!("mod {modio_id} not found"))?;
 
     let mod_ref = modio.mod_(MODIO_DRG_ID, modio_id);
     let filter = with_limit(10).order_by(modio::user::filters::files::Version::desc());

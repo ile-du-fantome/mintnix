@@ -1,10 +1,7 @@
-use std;
+use super::{colors, custom_popup_below_widget, is_committed};
 
-use super::{colors, custom_popup_above_or_below_widget, is_committed};
-
-use eframe::egui::{self, RichText};
+use eframe::egui::RichText;
 use eframe::epaint::Color32;
-use titlecase::Titlecase;
 
 use crate::state::{ModData_v0_2_0 as ModData, ModProfile_v0_2_0 as ModProfile};
 
@@ -25,9 +22,6 @@ impl Default for NamePopup {
 
 pub trait NamedEntries<E> {
     fn len(&self) -> usize;
-    fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
     fn contains(&self, name: &str) -> bool;
     fn select(&mut self, name: String);
     fn selected_name(&self) -> &str;
@@ -53,7 +47,7 @@ impl NamedEntries<ModProfile> for ModData {
     }
     fn add_new(&mut self, name: &str) {
         self.profiles.insert(name.to_owned(), Default::default());
-        self.active_profile = name.to_owned();
+        self.active_profile = name.to_string();
     }
     fn remove_selected(&mut self) {
         self.remove_active_profile();
@@ -79,7 +73,6 @@ pub(crate) fn ui<E, N>(
     name: &str,
     entries: &mut N,
     additional_ui: Option<impl FnOnce(&mut egui::Ui, &mut N)>,
-    mod_count: Option<(usize, usize)>,
     confirm_deletion: bool,
 ) -> bool
 where
@@ -88,27 +81,16 @@ where
     let mut modified = false;
     ui.push_id(name, |ui| {
         ui.horizontal(|ui| {
-            ui.label(format!("{name}").titlecase());
+            mk_add(ui, name, entries, &mut modified);
+            mk_delete(ui, name, entries, &mut modified, confirm_deletion);
+            mk_rename(ui, name, entries, &mut modified);
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-                if let Some((active, total)) = mod_count {
-                    ui.horizontal(|ui| {
-                        ui.set_width(60.);
-                        ui.label(format!("Active: {}", active))
-                            .on_hover_text(format!("Active mods: {}/{}", active, total));
-                    });
-                    ui.add_space(16.);
-                }
+                mk_duplicate(ui, name, entries, &mut modified);
 
-                mk_delete(ui, name, entries, &mut modified, confirm_deletion);
                 if let Some(additional_ui) = additional_ui {
                     additional_ui(ui, entries);
                 }
-                mk_rename(ui, name, entries, &mut modified);
-                mk_duplicate(ui, name, entries, &mut modified);
-                mk_add(ui, name, entries, &mut modified);
-
-                ui.add_space(16.);
 
                 ui.with_layout(ui.layout().with_main_justify(true), |ui| {
                     mk_dropdown(ui, name, entries, &mut modified);
@@ -119,24 +101,27 @@ where
     modified
 }
 
-fn mk_delete<E, N>(ui: &mut egui::Ui, name: &str, entries: &mut N, modified: &mut bool, confirm_deletion: bool)
-where
+fn mk_delete<E, N>(
+    ui: &mut egui::Ui,
+    name: &str,
+    entries: &mut N,
+    modified: &mut bool,
+    confirm_deletion: bool,
+) where
     N: NamedEntries<E>,
 {
     ui.add_enabled_ui(entries.len() > 1, |ui| {
         ui.scope(|ui| {
             ui.visuals_mut().widgets.hovered.weak_bg_fill = colors::DARK_RED;
-            ui.visuals_mut().widgets.hovered.fg_stroke.color = Color32::WHITE;
             ui.visuals_mut().widgets.active.weak_bg_fill = colors::DARKER_RED;
-            ui.visuals_mut().widgets.active.fg_stroke.color = Color32::WHITE;
             let response = ui
-                .button("\u{1F5D1}")
+                .button(" 🗑 ")
                 .on_hover_text_at_pointer(format!("Delete {name}"));
 
             if response.clicked() {
                 if confirm_deletion {
                     let popup_id = ui.make_persistent_id(format!("delete-{name}"));
-                    ui.memory_mut(|mem| mem.open_popup(popup_id));
+                    egui::Popup::open_id(ui.ctx(), popup_id);
                 } else {
                     entries.remove_selected();
                     *modified = true;
@@ -144,7 +129,7 @@ where
             }
 
             if confirm_deletion {
-                mk_delete_popup(entries, ui, name, response, modified)
+                mk_delete_popup(entries, ui, name, response, modified);
             }
         });
     });
@@ -158,17 +143,15 @@ where
         let response = ui
             .scope(|ui| {
                 ui.visuals_mut().widgets.hovered.weak_bg_fill = colors::DARK_GREEN;
-                ui.visuals_mut().widgets.hovered.fg_stroke.color = Color32::WHITE;
                 ui.visuals_mut().widgets.active.weak_bg_fill = colors::DARKER_GREEN;
-                ui.visuals_mut().widgets.active.fg_stroke.color = Color32::WHITE;
-                ui.button("\u{2795}")
+                ui.button(" ➕ ")
                     .on_hover_text_at_pointer(format!("Add new {name}"))
             })
             .inner;
 
         let popup_id = ui.make_persistent_id(format!("add-{name}"));
         if response.clicked() {
-            ui.memory_mut(|mem| mem.open_popup(popup_id));
+            egui::Popup::open_id(ui.ctx(), popup_id);
         }
         mk_name_popup(
             entries,
@@ -195,7 +178,7 @@ where
             .on_hover_text_at_pointer(format!("Rename {name}"));
         let popup_id = ui.make_persistent_id(format!("rename-{name}"));
         if response.clicked() {
-            ui.memory_mut(|mem| mem.open_popup(popup_id));
+            egui::Popup::open_id(ui.ctx(), popup_id);
         }
         mk_name_popup(
             entries,
@@ -217,17 +200,11 @@ where
     N: NamedEntries<E>,
 {
     let response = ui
-        .scope(|ui| {
-            ui.visuals_mut().widgets.hovered.weak_bg_fill = colors::GOLD;
-            ui.visuals_mut().widgets.active.weak_bg_fill = colors::DARK_GOLD;
-            ui.button("Clone")
-                .on_hover_text_at_pointer(format!("Duplicate {name}"))
-        })
-        .inner;
-
+        .button("🗐")
+        .on_hover_text_at_pointer(format!("Duplicate {name}"));
     let popup_id = ui.make_persistent_id(format!("duplicate-{name}"));
     if response.clicked() {
-        ui.memory_mut(|mem| mem.open_popup(popup_id));
+        egui::Popup::open_id(ui.ctx(), popup_id);
     }
     mk_name_popup(
         entries,
@@ -249,7 +226,7 @@ where
 {
     let mut selected = entries.selected_name().to_owned();
 
-    egui::ComboBox::from_id_source(format!("dropdown-{name}"))
+    egui::ComboBox::from_id_salt(format!("dropdown-{name}"))
         .width(ui.available_width())
         .selected_text(selected.clone())
         .show_ui(ui, |ui| {
@@ -278,12 +255,8 @@ fn mk_name_popup<E, N>(
 {
     let data_id = popup_id.with("data");
     let mut popup: NamePopup = ui.data(|data| data.get_temp(data_id)).unwrap_or_default();
-    popup.buffer_needs_prefill_and_focus = custom_popup_above_or_below_widget(
-        ui,
-        popup_id,
-        &response,
-        egui::AboveOrBelow::Below,
-        |ui| {
+    popup.buffer_needs_prefill_and_focus =
+        custom_popup_below_widget(ui, popup_id, &response, |ui| {
             ui.set_min_width(200.0);
             ui.vertical(|ui| {
                 if popup.buffer_needs_prefill_and_focus {
@@ -300,7 +273,7 @@ fn mk_name_popup<E, N>(
 
                 ui.horizontal(|ui| {
                     if ui.button("Cancel").clicked() {
-                        ui.memory_mut(|mem| mem.close_popup());
+                        egui::Popup::close_id(ui.ctx(), popup_id);
                     }
 
                     let invalid_name = popup.buffer.is_empty() || entries.contains(&popup.buffer);
@@ -308,14 +281,13 @@ fn mk_name_popup<E, N>(
                         .add_enabled(!invalid_name, egui::Button::new("OK"))
                         .clicked();
                     if !invalid_name && (clicked || is_committed(&res)) {
-                        ui.memory_mut(|mem| mem.close_popup());
+                        egui::Popup::close_id(ui.ctx(), popup_id);
                         accept(entries, std::mem::take(&mut popup.buffer));
                     }
                 });
             });
-        },
-    )
-    .is_none();
+        })
+        .is_none();
 
     ui.data_mut(|data| data.insert_temp(data_id, popup));
 }
@@ -331,31 +303,28 @@ fn mk_delete_popup<E, N>(
 {
     let popup_id = ui.make_persistent_id(format!("delete-{name}"));
 
-    custom_popup_above_or_below_widget(
-        ui,
-        popup_id,
-        &response,
-        egui::AboveOrBelow::Below,
-        |ui| {
-            ui.set_min_width(200.0);
-            ui.vertical(|ui| {
-                ui.label("Delete profile?");
+    custom_popup_below_widget(ui, popup_id, &response, |ui| {
+        ui.set_min_width(200.0);
+        ui.vertical(|ui| {
+            ui.label("Delete profile?");
 
-                ui.horizontal(|ui| {
-                    if ui.button("Cancel").clicked() {
-                        ui.memory_mut(|mem| mem.close_popup());
-                    }
+            ui.horizontal(|ui| {
+                if ui.button("Cancel").clicked() {
+                    egui::Popup::close_id(ui.ctx(), popup_id);
+                }
 
-                    if ui
-                        .add(egui::Button::new(RichText::new("Delete").color(Color32::WHITE)).fill(colors::DARK_RED))
-                        .clicked()
-                    {
-                        entries.remove_selected();
-                        *modified = true;
-                        ui.memory_mut(|mem| mem.close_popup());
-                    }
-                });
+                if ui
+                    .add(
+                        egui::Button::new(RichText::new("Delete").color(Color32::WHITE))
+                            .fill(colors::DARK_RED),
+                    )
+                    .clicked()
+                {
+                    entries.remove_selected();
+                    *modified = true;
+                    egui::Popup::close_id(ui.ctx(), popup_id);
+                }
             });
-        },
-    );
+        });
+    });
 }

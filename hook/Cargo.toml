@@ -12,11 +12,16 @@ crate-type = ["cdylib"]
 
 [dependencies]
 anyhow.workspace = true
+repak.workspace = true
 serde.workspace = true
+serde_json.workspace = true
+postcard.workspace = true
+fs-err.workspace = true
+tracing.workspace = true
 patternsleuth = { workspace = true, features = ["process-internal", "image-pe"] }
-retour = { version = "0.3.1", features = ["static-detour"] }
+retour = { version = "0.4.0-alpha.4", default-features = false }
 hook_resolvers = { path = "../hook_resolvers" }
-windows = { version = "0.52.0", features = [
+windows = { version = "0.61.3", features = [
   "Win32_Foundation",
   "Win32_System_SystemServices",
   "Win32_System_LibraryLoader",
@@ -24,3 +29,8 @@ windows = { version = "0.52.0", features = [
   "Win32_System_Threading",
 ] }
 mint_lib = { path = "../mint_lib" }
+bitflags = "2.9.3"
+widestring = "1.2.0"
+tokio = { workspace = true, features = ["full"] }
+tracing-appender = "0.2.3"
+proxy_dll = { git = "https://github.com/trumank/proxy_dll.git" }
