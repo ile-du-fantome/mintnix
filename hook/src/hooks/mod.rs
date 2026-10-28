@@ -76,8 +76,6 @@ pub unsafe fn initialize() -> Result<()> {
             )
             .map_err(|_| anyhow!("kismet hooks already initialized"))?;
 
-        server_list::init_hooks()?;
-
         if let Ok(address) = &globals().resolution.disable {
             patch_mem(
                 (address.0 as *mut u8).add(29),

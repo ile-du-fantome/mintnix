@@ -141,29 +141,3 @@ pub struct MetaMod {
     pub approval: ApprovalStatus,
     pub required: bool,
 }
-impl Meta {
-    pub fn to_server_list_string(&self) -> String {
-        use itertools::Itertools;
-
-        ["mint".into(), self.version.to_string()]
-            .into_iter()
-            .chain(
-                self.mods
-                    .iter()
-                    .sorted_by_key(|m| (std::cmp::Reverse(m.approval), &m.name))
-                    .take(100)
-                    .flat_map(|m| {
-                        [
-                            match m.approval {
-                                ApprovalStatus::Verified => 'V',
-                                ApprovalStatus::Approved => 'A',
-                                ApprovalStatus::Sandbox => 'S',
-                            }
-                            .into(),
-                            m.name.replace(';', ""),
-                        ]
-                    }),
-            )
-            .join(";")
-    }
-}

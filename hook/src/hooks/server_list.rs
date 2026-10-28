@@ -1,18 +1,9 @@
 use std::ffi::c_void;
-use std::sync::OnceLock;
 
-use anyhow::Result;
-use retour::GenericDetour;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
-use crate::globals;
 use crate::hooks::ExecFn;
 use crate::ue::{self, FName, FString, TArray, TMap};
-
-type FnFillSessionSetting =
-    unsafe extern "system" fn(*const c_void, *mut c_void, bool, *mut c_void, *mut c_void);
-
-static FILL_SESSION_SETTING: OnceLock<GenericDetour<FnFillSessionSetting>> = OnceLock::new();
 
 pub fn kismet_hooks() -> &'static [(&'static str, ExecFn)] {
     &[(
@@ -21,68 +12,9 @@ pub fn kismet_hooks() -> &'static [(&'static str, ExecFn)] {
     )]
 }
 
-pub unsafe fn init_hooks() -> Result<()> {
-    if let Ok(server_mods) = &globals().resolution.server_mods {
-        unsafe {
-            super::install(
-                &FILL_SESSION_SETTING,
-                std::mem::transmute(server_mods.fill_session_setting.0),
-                detour_fill_session_setting as FnFillSessionSetting,
-            )?;
-        }
-    }
-
-    Ok(())
-}
-
-unsafe extern "system" fn detour_fill_session_setting(
-    world: *const c_void,
-    game_settings: *mut c_void,
-    full_server: bool,
-    unknown1: *mut c_void,
-    unknown2: *mut c_void,
-) {
-    unsafe {
-        FILL_SESSION_SETTING.get().unwrap().call(
-            world,
-            game_settings,
-            full_server,
-            unknown1,
-            unknown2,
-        );
-
-        let name = globals().meta.to_server_list_string();
-
-        let s: FString = serde_json::to_string(&vec![JsonMod {
-            name,
-            version: "mint".into(),
-            category: 0,
-        }])
-        .unwrap()
-        .as_str()
-        .into();
-
-        type Fn = unsafe extern "system" fn(*const c_void, ue::FName, *const ue::FString, u32);
-
-        let f: Fn = std::mem::transmute(
-            globals()
-                .resolution
-                .server_mods
-                .as_ref()
-                .unwrap()
-                .set_fstring
-                .0,
-        );
-
-        f(game_settings, ue::FName::new(&"Mods".into()), &s, 3);
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 struct JsonMod {
     name: String,
-    version: String,
-    category: i32,
 }
 
 #[derive(Debug)]

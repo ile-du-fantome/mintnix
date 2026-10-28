@@ -2945,7 +2945,6 @@ version = "0.3.4"
 dependencies = [
  "anyhow",
  "fs-err",
- "itertools 0.14.0",
  "repak",
  "serde",
  "snafu",

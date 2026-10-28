@@ -11,7 +11,6 @@ anyhow.workspace = true
 steamlocate.workspace = true
 repak.workspace = true
 serde.workspace = true
-itertools.workspace = true
 fs-err.workspace = true
 tracing.workspace = true
 tracing-appender.workspace = true
