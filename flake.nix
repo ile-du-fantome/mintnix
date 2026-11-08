@@ -54,8 +54,7 @@
       # hook is built separately and its path is passed to the main build
       mingwPkgs = pkgs.pkgsCross.mingwW64;
       mingwCompiler = mingwPkgs.buildPackages.gcc;
-      mingwTool =
-        name: "${mingwCompiler}/bin/${mingwCompiler.targetPrefix}${name}";
+      mingwTool = name: "${mingwCompiler}/bin/${mingwCompiler.targetPrefix}${name}";
 
       libs = with pkgs; [
         gtk3
@@ -77,6 +76,11 @@
           lockFile = ./Cargo.lock;
           allowBuiltinFetchGit = true;
         };
+
+        # nixpkgs cargoSetupHook forces package to build with system libraries.
+        # Not a problem for the Linux build, but the Windows hook cannot use
+        # system zstd
+        dontCargoUseSystemLibs = "1";
 
         nativeBuildInputs = [
           pkgs.pkg-config
@@ -148,7 +152,8 @@
           pkgs.git
           pkgs.just
           pkgs.rust-analyzer
-        ] ++ libs;
+        ]
+        ++ libs;
 
         LD_LIBRARY_PATH = libraryPath;
         CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUSTFLAGS = "-L ${mingwPkgs.windows.pthreads}/lib";
