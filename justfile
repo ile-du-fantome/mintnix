@@ -80,14 +80,22 @@ test: hook
 test-release: hook-release
     {{ _nix }} env MINT_HOOK_DLL={{ _hook_release }} cargo test --release
 
-# Run clippy lints
+# Run debug clippy lints
 clippy: hook
     {{ _nix }} env MINT_HOOK_DLL={{ _hook_debug }} cargo clippy --all-targets
+
+# Run release clippy lints
+clippy-release: hook
+    {{ _nix }} env MINT_HOOK_DLL={{ _hook_debug }} cargo clippy --all-targets --release
 
 # Check code formatting
 fmt:
     {{ _nix }} cargo fmt --check
 
-# Check formatting, compilation, tests, and lints
+# Check debug formatting, compilation, tests, and lints
 validate: fmt check test clippy
+    @echo "✓ All validations passed"
+
+# Check release formatting, compilation, tests, and lints
+validate-release: fmt check-release build-release test-release clippy-release
     @echo "✓ All validations passed"
